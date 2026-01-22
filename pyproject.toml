@@ -1,0 +1,110 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "autiobook"
+version = "0.1.0"
+description = "convert epub files to audiobooks using qwen3-tts"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "qwen-tts>=0.0.4",
+    "ebooklib>=0.18",
+    "beautifulsoup4>=4.12",
+    "pydub>=0.25",
+    "soundfile>=0.12",
+    "lxml>=5.0",
+    "tqdm>=4.66",
+    "openai>=2.15.0",
+    "mutagen>=1.47",
+]
+
+[project.scripts]
+autiobook = "autiobook.main:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.4",
+    "mypy>=1.10",
+]
+cpu = [
+    "torch",
+    "torchaudio",
+]
+gpu = [
+    "torch",
+    "torchaudio",
+]
+rocm-gfx1151 = [
+    "torch",
+    "torchaudio",
+    "pytorch-triton-rocm",
+    "rocm",
+    "rocm-sdk-core",
+    "rocm-sdk-libraries-gfx1151",
+]
+
+[tool.setuptools.packages.find]
+include = ["autiobook*"]
+
+[tool.uv]
+prerelease = "allow"
+conflicts = [
+    [
+        { extra = "cpu" },
+        { extra = "gpu" },
+        { extra = "rocm-gfx1151" },
+    ],
+]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "gpu" },
+    { index = "pytorch-rocm-gfx1151", extra = "rocm-gfx1151" },
+]
+torchaudio = [
+    { index = "pytorch-cpu", extra = "cpu" },
+    { index = "pytorch-cu128", extra = "gpu" },
+    { index = "pytorch-rocm-gfx1151", extra = "rocm-gfx1151" },
+]
+pytorch-triton-rocm = [
+    { index = "pytorch-rocm-gfx1151", extra = "rocm-gfx1151" },
+]
+rocm = [
+    { index = "pytorch-rocm-gfx1151", extra = "rocm-gfx1151" },
+]
+rocm-sdk-core = [
+    { index = "pytorch-rocm-gfx1151", extra = "rocm-gfx1151" },
+]
+rocm-sdk-libraries-gfx1151 = [
+    { index = "pytorch-rocm-gfx1151" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-rocm-gfx1151"
+url = "https://repo.amd.com/rocm/whl/gfx1151"
+explicit = true
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true

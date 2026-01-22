@@ -1,0 +1,155 @@
+# architecture
+
+## overview
+
+Standard Workflow:
+```
+epub file → extract → txt files → synthesize → wav files → export → mp3 files
+```
+
+Dramatization Workflow:
+```
+txt files → cast gen → cast.json → audition → voice samples
+     ↓
+script gen (llm) → json scripts → perform (cloning) → wav files
+```
+
+each phase is idempotent and can be run independently.
+
+## cli commands
+
+### chapters
+
+list chapters in an epub file.
+
+```
+autiobook chapters book.epub
+```
+
+### extract
+
+extract chapter text from epub to workdir.
+
+```
+autiobook extract book.epub -o workdir/
+```
+
+creates:
+- `workdir/metadata.json` - book metadata
+- `workdir/NN_Title.txt` - chapter text files
+
+### synthesize
+
+convert text files to wav audio.
+
+```
+autiobook synthesize workdir/ -s Ryan
+```
+
+creates:
+- `workdir/NN_Title.wav` - audio files
+
+skips existing wav files (idempotent).
+
+### dramatize / cast / audition / script / perform
+
+advanced workflow for multi-speaker dramatization.
+
+- `cast`: generates `cast.json` from text sample using LLM.
+- `audition`: generates `voices/Character.wav` using `Qwen3-TTS-VoiceDesign`.
+- `script`: rewrites text into `NN_Title.json` script with speaker attribution using LLM.
+- `perform`: synthesizes audio using `Qwen3-TTS-Base` voice cloning from scripts + voice samples.
+
+### export
+
+convert wav files to mp3 with metadata.
+
+```
+autiobook export workdir/ -o audiobook/
+```
+
+creates:
+- `audiobook/NN_Title.mp3` - mp3 files with id3 tags
+
+skips existing mp3 files (idempotent).
+
+### convert
+
+run all phases (extract → synthesize → export).
+
+```
+autiobook convert book.epub -o workdir/
+```
+
+## modules
+
+### epub.py
+
+parses epub files using ebooklib, extracts chapter text using beautifulsoup.
+
+key types:
+- `Chapter(index, title, text)` - single chapter data
+- `Book(title, author, chapters)` - parsed book data
+
+### tts.py
+
+wraps qwen3-tts for text-to-speech conversion.
+
+- chunks long text at sentence boundaries (~500 char limit)
+- synthesizes each chunk and concatenates audio
+- supports configurable voice and style
+- **Voice Design**: generates new voices from text descriptions
+- **Voice Cloning**: clones voices from reference audio
+
+### dramatize.py
+
+orchestrates the dramatization workflow.
+
+- manages cast generation and storage
+- handles script generation and parsing
+- performs multi-speaker synthesis using `tts.py`
+
+### llm.py
+
+interface for LLM operations (cast and script generation).
+
+- uses openai-compatible API
+- provides structured output parsing for cast and scripts
+
+### audio.py
+
+audio processing utilities.
+
+- concatenate audio arrays with pauses
+- normalize audio levels
+
+### export.py
+
+mp3 export with id3 metadata.
+
+- wav to mp3 conversion via pydub/ffmpeg
+- id3 tags: title, album, artist, track number
+- filename format: `NN_Chapter_Title.mp3`
+
+### main.py
+
+cli entry point with subcommands.
+
+## dependencies
+
+| package | purpose |
+|---------|---------|
+| qwen-tts | text-to-speech |
+| openai | llm integration |
+| ebooklib | epub parsing |
+| beautifulsoup4 | html text extraction |
+| pydub | audio manipulation |
+| torch | model inference |
+| soundfile | wav i/o |
+
+## constants
+
+- `MAX_CHUNK_SIZE = 500` - max chars per tts chunk
+- `SAMPLE_RATE = 24000` - qwen3-tts output rate
+- `PARAGRAPH_PAUSE_MS = 500` - pause between paragraphs
+- `DEFAULT_BITRATE = "192k"` - mp3 encoding bitrate

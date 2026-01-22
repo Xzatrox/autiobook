@@ -1,0 +1,301 @@
+"""cli entry point for autiobook."""
+
+import argparse
+from pathlib import Path
+
+from .config import (
+    BASE_MODEL,
+    DEFAULT_BITRATE,
+    DEFAULT_MODEL,
+    VOICE_DESIGN_MODEL,
+)
+from .dramatize import (
+    cmd_audition,
+    cmd_cast,
+    cmd_perform,
+    cmd_script,
+    dramatize_book,
+)
+from .epub import parse_epub, save_extracted
+from .export import export_audiobook
+from .tts import TTSConfig, synthesize_chapters
+from .utils import add_common_args, parse_chapter_range
+
+
+def cmd_download(args):
+    """download tts model weights."""
+    from huggingface_hub import snapshot_download
+
+    models = []
+    if args.all:
+        models = [DEFAULT_MODEL, VOICE_DESIGN_MODEL, BASE_MODEL]
+    else:
+        models = [args.model]
+
+    for model in models:
+        print(f"downloading model {model}...")
+        path = snapshot_download(repo_id=model)
+        print(f"model downloaded to {path}")
+
+
+def cmd_chapters(args):
+    """list chapters in an epub file."""
+    epub_path = Path(args.epub)
+    book, cover_data = parse_epub(epub_path)
+
+    print(f"title: {book.title}")
+    print(f"author: {book.author}")
+    print(f"language: {book.language}")
+    print(f"chapters: {len(book.chapters)}")
+    print(f"cover: {'yes' if cover_data else 'no'}")
+    print()
+
+    for chapter in book.chapters:
+        print(f"  {chapter.index:2d}. {chapter.title} ({chapter.word_count} words)")
+
+
+def cmd_extract(args):
+    """extract chapter text from epub to workdir."""
+    epub_path = Path(args.epub)
+    workdir = Path(args.output)
+
+    print(f"parsing {epub_path.name}...")
+    book, cover_data = parse_epub(epub_path)
+
+    print(f"extracting {len(book.chapters)} chapters to {workdir}/...")
+    save_extracted(book, workdir, cover_data)
+
+    print("done")
+
+
+def cmd_dramatize(args):
+    """generate script and cast using LLM."""
+    workdir = Path(args.workdir)
+
+    chapters = None
+    if args.chapters:
+        chapters = parse_chapter_range(args.chapters)
+
+    tts_config = TTSConfig(
+        batch_size=args.batch_size,
+        chunk_size=args.chunk_size,
+        compile_model=not args.no_compile,
+        warmup=not args.no_warmup,
+        do_sample=not args.greedy,
+        temperature=args.temperature,
+    )
+
+    print(f"dramatizing chapters in {workdir}/...")
+    dramatize_book(
+        workdir,
+        api_base=args.api_base,
+        api_key=args.api_key,
+        model=args.model,
+        chapters=chapters,
+        tts_config=tts_config,
+        pooled=args.pooled,
+        min_appearances=args.min_appearances,
+    )
+
+    print("done")
+
+
+def cmd_synthesize(args):
+    """convert text files to wav audio."""
+    workdir = Path(args.workdir)
+
+    chapters = None
+    if args.chapters:
+        chapters = parse_chapter_range(args.chapters)
+
+    config = TTSConfig(
+        speaker=args.speaker,
+        batch_size=args.batch_size,
+        chunk_size=args.chunk_size,
+        compile_model=not args.no_compile,
+        warmup=not args.no_warmup,
+        do_sample=not args.greedy,
+        temperature=args.temperature,
+    )
+
+    print(f"synthesizing chapters in {workdir}/...")
+    synthesize_chapters(workdir, config, chapters, args.instruct, args.pooled)
+
+    print("done")
+
+
+def cmd_export(args):
+    """convert wav files to mp3 with metadata."""
+    workdir = Path(args.workdir)
+    output_dir = Path(args.output)
+
+    print(f"exporting chapters to {output_dir}/...")
+    exported = export_audiobook(workdir, output_dir, args.bitrate)
+
+    print(f"exported {len(exported)} chapter(s)")
+
+
+def cmd_clean(args):
+    """remove intermediate files (chunks directories)."""
+    import shutil
+
+    from .config import CHUNKS_DIR
+
+    workdir = Path(args.workdir)
+    chunks_dir = workdir / CHUNKS_DIR
+
+    if not chunks_dir.exists():
+        print("no chunks directory found")
+        return
+
+    # count subdirectories
+    chunk_dirs = list(chunks_dir.iterdir()) if chunks_dir.is_dir() else []
+    count = len([d for d in chunk_dirs if d.is_dir()])
+
+    if args.dry_run:
+        print(f"would remove {count} chunk directories from {chunks_dir}")
+        return
+
+    shutil.rmtree(chunks_dir)
+    print(f"removed {count} chunk directories")
+
+
+def cmd_convert(args):
+    """run full conversion pipeline."""
+    epub_path = Path(args.epub)
+    workdir = Path(args.output)
+    audiobook_dir = Path(args.audiobook) if args.audiobook else workdir / "audiobook"
+
+    chapters = None
+    if args.chapters:
+        chapters = parse_chapter_range(args.chapters)
+
+    # extract
+    print(f"parsing {epub_path.name}...")
+    book, cover_data = parse_epub(epub_path)
+    print(f"extracting {len(book.chapters)} chapters to {workdir}/...")
+    save_extracted(book, workdir, cover_data)
+
+    # synthesize
+    config = TTSConfig(
+        speaker=args.speaker,
+        batch_size=args.batch_size,
+        chunk_size=args.chunk_size,
+        compile_model=not args.no_compile,
+        warmup=not args.no_warmup,
+        do_sample=not args.greedy,
+        temperature=args.temperature,
+    )
+    print("synthesizing chapters...")
+    synthesize_chapters(workdir, config, chapters, args.instruct, args.pooled)
+
+    # export
+    print(f"exporting chapters to {audiobook_dir}/...")
+    exported = export_audiobook(workdir, audiobook_dir, args.bitrate)
+
+    print(f"done - {len(exported)} chapter(s) exported")
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="autiobook",
+        description="convert epub files to audiobooks using qwen3-tts",
+    )
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # download command
+    p_download = subparsers.add_parser("download", help="download tts model weights")
+    p_download.add_argument("-m", "--model", default=DEFAULT_MODEL, help="model name")
+    p_download.add_argument(
+        "--all", action="store_true", help="download all models (custom, design, base)"
+    )
+    p_download.set_defaults(func=cmd_download)
+
+    # chapters command
+    p_chapters = subparsers.add_parser("chapters", help="list chapters in an epub file")
+    p_chapters.add_argument("epub", help="path to epub file")
+    p_chapters.set_defaults(func=cmd_chapters)
+
+    # extract command
+    p_extract = subparsers.add_parser("extract", help="extract chapter text from epub")
+    p_extract.add_argument("epub", help="path to epub file")
+    p_extract.add_argument("-o", "--output", required=True, help="output workdir")
+    p_extract.set_defaults(func=cmd_extract)
+
+    # dramatize command
+    p_dramatize = subparsers.add_parser("dramatize", help="run full dramatization pipeline")
+    p_dramatize.add_argument("workdir", help="path to workdir")
+    add_common_args(p_dramatize, group="llm")
+    add_common_args(p_dramatize, group="chapters")
+    add_common_args(p_dramatize, group="tts")
+    add_common_args(p_dramatize, group="cast")
+    p_dramatize.set_defaults(func=cmd_dramatize)
+
+    # cast command
+    p_cast = subparsers.add_parser("cast", help="generate cast list from book text")
+    p_cast.add_argument("workdir", help="path to workdir")
+    add_common_args(p_cast, group="llm")
+    add_common_args(p_cast, group="chapters")
+    p_cast.set_defaults(func=cmd_cast)
+
+    # audition command
+    p_audition = subparsers.add_parser("audition", help="generate character voice samples")
+    p_audition.add_argument("workdir", help="path to workdir")
+    add_common_args(p_audition, group="cast")
+    p_audition.set_defaults(func=cmd_audition)
+
+    # script command
+    p_script = subparsers.add_parser("script", help="dramatize chapters into scripts")
+    p_script.add_argument("workdir", help="path to workdir")
+    add_common_args(p_script, group="llm")
+    add_common_args(p_script, group="chapters")
+    p_script.set_defaults(func=cmd_script)
+
+    # perform command
+    p_perform = subparsers.add_parser("perform", help="synthesize audio from dramatized scripts")
+    p_perform.add_argument("workdir", help="path to workdir")
+    add_common_args(p_perform, group="chapters")
+    add_common_args(p_perform, group="tts")
+    add_common_args(p_perform, group="cast")
+    p_perform.set_defaults(func=cmd_perform)
+
+    # synthesize command
+    p_synth = subparsers.add_parser("synthesize", help="convert text files to wav audio")
+    p_synth.add_argument("workdir", help="path to workdir with txt files")
+    add_common_args(p_synth, group="chapters")
+    add_common_args(p_synth, group="speaker")
+    add_common_args(p_synth, group="instruct")
+    add_common_args(p_synth, group="tts")
+    p_synth.set_defaults(func=cmd_synthesize)
+
+    # export command
+    p_export = subparsers.add_parser("export", help="convert wav files to mp3")
+    p_export.add_argument("workdir", help="path to workdir with wav files")
+    p_export.add_argument("-o", "--output", required=True, help="output directory for mp3 files")
+    p_export.add_argument("-b", "--bitrate", default=DEFAULT_BITRATE, help="mp3 bitrate")
+    p_export.set_defaults(func=cmd_export)
+
+    # clean command
+    p_clean = subparsers.add_parser("clean", help="remove intermediate chunk files")
+    p_clean.add_argument("workdir", help="path to workdir")
+    p_clean.add_argument("-n", "--dry-run", action="store_true", help="show what would be removed")
+    p_clean.set_defaults(func=cmd_clean)
+
+    # convert command (full pipeline)
+    p_convert = subparsers.add_parser("convert", help="run full conversion pipeline")
+    p_convert.add_argument("epub", help="path to epub file")
+    p_convert.add_argument("-o", "--output", required=True, help="workdir for intermediate files")
+    p_convert.add_argument("--audiobook", help="output directory for mp3 files")
+    p_convert.add_argument("-b", "--bitrate", default=DEFAULT_BITRATE, help="mp3 bitrate")
+    add_common_args(p_convert, group="chapters")
+    add_common_args(p_convert, group="speaker")
+    add_common_args(p_convert, group="instruct")
+    add_common_args(p_convert, group="tts")
+    p_convert.set_defaults(func=cmd_convert)
+
+    args = parser.parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

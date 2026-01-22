@@ -1,0 +1,7 @@
+/.venv/
+/workdir_test/
+__pycache__/
+*.egg-info/
+/books/
+/.mypy_cache/
+/.ruff_cache/
