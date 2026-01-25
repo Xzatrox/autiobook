@@ -20,7 +20,8 @@ build-rocm: venv
 	FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" uv pip install flash-attn --no-build-isolation
 
 test:
-	./test_e2e.sh
+	./tests/test_e2e.sh
+	./tests/test_e2e_dramatize.sh
 
 lint:
 	$(RUN) ruff check autiobook/

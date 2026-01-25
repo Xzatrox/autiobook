@@ -1,8 +1,7 @@
 /.venv/
-/testdata_workdir/
-/testdata_audiobooks/
 __pycache__/
 *.egg-info/
-/books/
 /.mypy_cache/
 /.ruff_cache/
+/testdata_workdir/
+/books/

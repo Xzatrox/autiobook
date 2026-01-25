@@ -5,13 +5,13 @@ import re
 from contextlib import nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, List, cast
 
 import numpy as np
-import soundfile as sf
+import soundfile as sf  # type: ignore
 import torch
-import transformers
-from tqdm import tqdm
+import transformers  # type: ignore
+from tqdm import tqdm  # type: ignore
 
 from .audio import (
     check_segment_exists,
@@ -25,10 +25,11 @@ from .config import (
     MAX_CHUNK_SIZE,
     PARAGRAPH_PAUSE_MS,
     SAMPLE_RATE,
+    TXT_EXT,
 )
+from .epub import load_metadata
 from .pooling import AudioTask, process_pooled_tasks
-from .resume import compute_hash
-from .utils import iter_pending_chapters
+from .resume import ResumeManager, compute_hash, get_command_dir, list_chapters
 
 transformers.logging.set_verbosity_error()
 
@@ -128,7 +129,7 @@ class TTSEngine:
             self._model = None
             self._loaded_model_name = None
 
-        from qwen_tts import Qwen3TTSModel
+        from qwen_tts import Qwen3TTSModel  # type: ignore[import-untyped]
 
         # determine dtype and attention implementation
         if "cuda" in self.config.device:
@@ -185,7 +186,7 @@ class TTSEngine:
 
     def _compile_model(self):
         """apply torch.compile to model components."""
-        if self._compiled:
+        if self._compiled or self._model is None:
             return
 
         print("compiling model for faster inference...")
@@ -220,6 +221,8 @@ class TTSEngine:
     def _run_inference(self, func_name: str, **kwargs) -> tuple[Any, int]:
         """helper to run inference with correct context and params."""
         self._load_model()
+        if self._model is None:
+            raise RuntimeError("failed to load model")
         func = getattr(self._model, func_name)
 
         # common args
@@ -230,7 +233,8 @@ class TTSEngine:
 
         with self._get_attn_ctx():
             with torch.inference_mode():
-                return func(**kwargs)
+                res = func(**kwargs)
+                return cast(tuple[Any, int], res)
 
     def synthesize(
         self, text: str | list[str], instruct: str = ""
@@ -343,7 +347,7 @@ def chunk_text(text: str, max_size: int = MAX_CHUNK_SIZE) -> list[str]:
     sentences = SENTENCE_ENDINGS.split(text)
 
     chunks = []
-    current_chunk = []
+    current_chunk: List[str] = []
     current_length = 0
 
     for sentence in sentences:
@@ -376,40 +380,48 @@ def synthesize_chapters(
     force: bool = False,
 ) -> None:
     """synthesize audio for chapters in workdir."""
-    from .config import TXT_EXT
+    extract_dir = get_command_dir(workdir, "extract")
+    synth_dir = get_command_dir(workdir, "synthesize")
 
     # check if any source files exist
-    if not any(workdir.glob(f"*{TXT_EXT}")):
-        print("synthesize: no text files found in workdir!")
+    if not any(extract_dir.glob(f"*{TXT_EXT}")):
+        print("synthesize: no text files found in extract/!")
         return
 
     engine = TTSEngine(config)
-    pending = list(
-        iter_pending_chapters(
-            workdir, chapters, skip_message="already synthesized", force=force
+    metadata = load_metadata(workdir)
+    pending = [
+        (s, t)
+        for _, s, t in list_chapters(
+            metadata, extract_dir, synth_dir, chapters_filter=chapters
         )
-    )
+    ]
 
     if not pending:
-        print("synthesize: all chapters up to date.")
+        print("synthesize: no chapters to process.")
         return
 
+    # resume manager for assembly
+    resume = ResumeManager.for_command(workdir, "synthesize", force=force)
+
     # pooled and single-chapter now use the same underlying segment-based logic
-    _perform_synthesis(engine, pending, instruct, force=force)
+    _perform_synthesis(engine, pending, instruct, resume=resume, force=force)
 
 
 def _perform_synthesis(
     engine: TTSEngine,
     pending: list[tuple[Path, Path]],
     instruct: str = "",
+    resume: ResumeManager | None = None,
     force: bool = False,
 ) -> None:
     """synthesize multiple chapters with pooled batching and segment caching."""
     tasks = []
     chapter_sequences = []
+    needs_assembly = {}  # wav_path -> manifest_hash
 
     for txt_path, wav_path in pending:
-        text = txt_path.read_text()
+        text = txt_path.read_text(encoding="utf-8")
         chunks = chunk_text(text, engine.config.chunk_size)
         chunks = [c for c in chunks if c.strip()]
 
@@ -430,19 +442,38 @@ def _perform_synthesis(
                     )
                 )
 
-        chapter_sequences.append((wav_path, chapter_hashes, segments_dir))
+        manifest_hash = compute_hash(chapter_hashes)
+        chapter_sequences.append(
+            (wav_path, chapter_hashes, segments_dir, manifest_hash)
+        )
+
+        if force or not wav_path.exists():
+            needs_assembly[wav_path] = manifest_hash
+        elif resume and not resume.is_fresh(str(wav_path), manifest_hash):
+            needs_assembly[wav_path] = manifest_hash
 
     if tasks:
         process_pooled_tasks(engine, tasks, desc="synthesizing chapters", force=force)
+        # Any chapter whose segments were regenerated must be re-assembled
+        for task in tasks:
+            for wav_path, hashes, seg_dir, manifest_hash in chapter_sequences:
+                if task.segment_hash in hashes:
+                    needs_assembly[wav_path] = manifest_hash
 
     # Assemble all chapters
-    for wav_path, hashes, seg_dir in chapter_sequences:
+    for wav_path, hashes, seg_dir, manifest_hash in chapter_sequences:
+        if wav_path not in needs_assembly:
+            continue
+
         try:
             audio_segments = [load_segment(seg_dir, h) for h in hashes]
             combined = concatenate_audio(
                 audio_segments, SAMPLE_RATE, PARAGRAPH_PAUSE_MS
             )
             sf.write(str(wav_path), combined, SAMPLE_RATE)
+            if resume:
+                resume.update(str(wav_path), manifest_hash)
+                resume.save()
             print(f"  -> {wav_path.name}")
         except Exception as e:
             print(f"failed to assemble {wav_path.name}: {e}")

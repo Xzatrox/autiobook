@@ -47,18 +47,43 @@ autiobook convert book.epub -o workdir/
 
 runs all phases, skipping already-completed steps.
 
-### phased conversion
+### extract
 
-```bash
-# extract text from epub
+extract chapter text from epub to workdir.
+
+```
 autiobook extract book.epub -o workdir/
+```
 
-# synthesize audio from text (skips existing wav files)
+creates:
+- `workdir/extract/metadata.json` - book metadata
+- `workdir/extract/NN_Title.txt` - chapter text files
+- `workdir/extract/state.json` - resumability state
+
+### synthesize
+
+convert text files to wav audio.
+
+```
 autiobook synthesize workdir/ -s Ryan
+```
 
-# export wav files to mp3 (skips existing mp3 files)
+creates:
+- `workdir/synthesize/NN_Title.wav` - audio files
+- `workdir/synthesize/state.json` - resumability state
+
+### export
+
+convert wav files to mp3 with metadata.
+
+```
 autiobook export workdir/ -o audiobook/
 ```
+
+creates:
+- `audiobook/NN_Title.mp3` - mp3 files with id3 tags
+- `workdir/export/state.json` - resumability state
+
 
 ### dramatized conversion (llm)
 
@@ -156,19 +181,32 @@ compatible with the [Voice](https://github.com/PaulWoitaschek/Voice) audiobook p
 
 ## workdir structure
 
+Intermediate files are organized into subdirectories by command:
+
 ```
 workdir/
-├── metadata.json          # book metadata
-├── cover.jpg              # book cover (if available)
-├── cast.json              # character list for dramatized mode
-├── voices/                # generated voice samples
-│   ├── Narrator.wav
-│   └── Character_Name.wav
-├── 01_Introduction.txt    # extracted chapter text
-├── 01_Introduction.json   # dramatized script (speaker segments)
-├── 01_Introduction.wav    # synthesized audio
-├── 02_Chapter_One.txt
-├── 02_Chapter_One.json
-├── 02_Chapter_One.wav
-└── ...
+├── extract/               # extracted text and metadata
+│   ├── metadata.json
+│   ├── cover.jpg
+│   ├── NN_Title.txt
+│   └── state.json
+├── cast/                  # character list and analysis state
+│   ├── cast.json
+│   └── state.json
+├── audition/              # character voice samples
+│   ├── Character.wav
+│   └── state.json
+├── script/                # dramatized scripts (speaker segments)
+│   ├── NN_Title.json
+│   └── state.json
+├── perform/               # dramatized audio performance
+│   ├── NN_Title.wav
+│   ├── segments/          # segment cache
+│   └── state.json
+└── synthesize/            # standard mono-voice audio
+    ├── NN_Title.wav
+    ├── segments/          # segment cache
+    └── state.json
 ```
+
+Each command is fully resumable based on content hashes stored in `state.json`.

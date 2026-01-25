@@ -9,12 +9,12 @@ OUTDIR="./testdata_audiobooks/isaac-asimov_short-science-fiction/"
 LLM_FLAGS=(--api-base http://localhost:7860/v1 --api-key fake --model gpt-oss-120b:Q8_0)
 
 cleanup() {
-    rm -rf "$WORKDIR" "$OUTDIR"
+	rm -rf "$WORKDIR" "$OUTDIR"
 }
 
 die() {
-    echo "FAIL: $1" >&2
-    exit 1
+	echo "FAIL: $1" >&2
+	exit 1
 }
 
 echo "=== autiobook e2e test ==="
@@ -36,8 +36,8 @@ echo "--- test: extract ---"
 autiobook extract "$TEST_EPUB" -o "$WORKDIR" || die "extract command failed"
 
 # verify extraction output
-[[ -f "$WORKDIR/metadata.json" ]] || die "metadata.json not created"
-txt_count=$(find "$WORKDIR" -name "*.txt" | wc -l)
+[[ -f "$WORKDIR/extract/metadata.json" ]] || die "metadata.json not created"
+txt_count=$(find "$WORKDIR/extract" -name "*.txt" | wc -l)
 [[ $txt_count -gt 0 ]] || die "no txt files created"
 echo "extracted $txt_count chapter(s)"
 
@@ -62,7 +62,7 @@ echo "--- test: perform ---"
 autiobook perform "$WORKDIR" || die "synthesize command failed"
 
 # verify perform output
-wav_count=$(find "$WORKDIR" -name "*.wav" | wc -l)
+wav_count=$(find "$WORKDIR/perform" -name "*.wav" | wc -l)
 [[ $wav_count -gt 0 ]] || die "no wav files created"
 echo "dramatized $wav_count chapter(s)"
 
@@ -79,8 +79,8 @@ echo "exported $mp3_count chapter(s)"
 # verify mp3 is playable
 first_mp3=$(find "$OUTDIR" -name "*.mp3" | sort | head -1)
 if command -v ffprobe &>/dev/null; then
-    ffprobe -v error "$first_mp3" || die "mp3 file not valid"
-    echo "mp3 validated with ffprobe"
+	ffprobe -v error "$first_mp3" || die "mp3 file not valid"
+	echo "mp3 validated with ffprobe"
 fi
 
 echo ""
@@ -103,7 +103,7 @@ echo ""
 echo "--- test: dramatize (full pipeline) ---"
 cleanup
 autiobook convert "${LLM_FLAGS[@]}" "$TEST_EPUB" -o "$WORKDIR" --audiobook "$OUTDIR" -c 1 || die "convert command failed"
-[[ -f "$WORKDIR/metadata.json" ]] || die "dramatize: metadata.json not created"
+[[ -f "$WORKDIR/extract/metadata.json" ]] || die "dramatize: metadata.json not created"
 mp3_count=$(find "$OUTDIR" -name "*.mp3" 2>/dev/null | wc -l)
 [[ $mp3_count -gt 0 ]] || die "convert: no mp3 files created"
 echo "full pipeline completed"

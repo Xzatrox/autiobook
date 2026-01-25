@@ -22,7 +22,7 @@ from .dramatize import (
 from .epub import parse_epub, save_extracted
 from .export import export_audiobook
 from .tts import synthesize_chapters
-from .utils import add_common_args, get_chapters, get_tts_config
+from .utils import add_common_args, get_chapters, get_pipeline_paths, get_tts_config
 
 
 def cmd_download(args):
@@ -65,7 +65,7 @@ def cmd_extract(args):
     print(f"extract: parsing {epub_path.name}...")
     book, cover_data = parse_epub(epub_path)
 
-    print(f"extract: extracting {len(book.chapters)} chapters to {workdir}/...")
+    print(f"extract: extracting {len(book.chapters)} chapters to {workdir}/extract/...")
     save_extracted(book, workdir, cover_data)
 
     print("extract: done")
@@ -73,11 +73,19 @@ def cmd_extract(args):
 
 def cmd_dramatize(args):
     """generate script and cast using LLM."""
-    workdir = Path(args.workdir)
+    epub_path, workdir = get_pipeline_paths(args)
+    audiobook_dir = workdir / "audiobook"
     chapters = get_chapters(args)
-    tts_config = get_tts_config(args)
 
-    print(f"dramatize: dramatizing chapters in {workdir}/...")
+    # extract
+    print(f"extract: parsing {epub_path.name}...")
+    book, cover_data = parse_epub(epub_path)
+    print(f"extract: extracting {len(book.chapters)} chapters to {workdir}/extract/...")
+    save_extracted(book, workdir, cover_data)
+
+    # dramatize
+    tts_config = get_tts_config(args)
+    print(f"dramatize: dramatizing chapters in {workdir}...")
     dramatize_book(
         workdir,
         api_base=args.api_base,
@@ -90,7 +98,16 @@ def cmd_dramatize(args):
         force=args.force,
     )
 
-    print("dramatize: done")
+    # export
+    print(f"export: exporting chapters to {audiobook_dir}/...")
+    new, skipped = export_audiobook(
+        workdir, audiobook_dir, args.bitrate, force=args.force
+    )
+
+    msg = f"dramatize: done - {new} chapter(s) exported"
+    if skipped > 0:
+        msg += f" ({skipped} skipped)"
+    print(msg)
 
 
 def cmd_synthesize(args):
@@ -99,7 +116,7 @@ def cmd_synthesize(args):
     chapters = get_chapters(args)
     config = get_tts_config(args)
 
-    print(f"synthesize: synthesizing chapters in {workdir}/...")
+    print(f"synthesize: synthesizing chapters in {workdir}/synthesize/...")
     synthesize_chapters(
         workdir, config, chapters, args.instruct, args.pooled, force=args.force
     )
@@ -110,64 +127,72 @@ def cmd_synthesize(args):
 def cmd_export(args):
     """convert wav files to mp3 with metadata."""
     workdir = Path(args.workdir)
-    output_dir = Path(args.output)
+    output_dir = Path(args.output) if args.output else workdir / "audiobook"
 
     print(f"export: exporting chapters to {output_dir}/...")
-    count = export_audiobook(workdir, output_dir, args.bitrate, force=args.force)
+    new, skipped = export_audiobook(workdir, output_dir, args.bitrate, force=args.force)
 
-    print(f"export: {count} chapter(s) exported")
+    msg = f"export: {new} chapter(s) exported"
+    if skipped > 0:
+        msg += f" ({skipped} skipped)"
+    print(msg)
 
 
 def cmd_clean(args):
-    """remove intermediate files (chunks directories)."""
+    """remove intermediate files (segment caches)."""
     import shutil
 
-    from .config import CHUNKS_DIR
+    from .resume import get_command_dir
 
     workdir = Path(args.workdir)
-    chunks_dir = workdir / CHUNKS_DIR
+    clean_dirs = [
+        get_command_dir(workdir, "perform") / "segments",
+        get_command_dir(workdir, "synthesize") / "segments",
+    ]
 
-    if not chunks_dir.exists():
-        print("clean: no chunks directory found")
+    to_remove = [d for d in clean_dirs if d.exists() and d.is_dir()]
+
+    if not to_remove:
+        print("clean: no segment caches found")
         return
 
-    # count subdirectories
-    chunk_dirs = list(chunks_dir.iterdir()) if chunks_dir.is_dir() else []
-    count = len([d for d in chunk_dirs if d.is_dir()])
-
-    if args.dry_run:
-        print(f"clean: would remove {count} chunk directories from {chunks_dir}")
-        return
-
-    shutil.rmtree(chunks_dir)
-    print(f"clean: removed {count} chunk directories")
+    for d in to_remove:
+        if args.dry_run:
+            print(f"clean: would remove {d}")
+        else:
+            shutil.rmtree(d)
+            print(f"clean: removed {d}")
 
 
 def cmd_convert(args):
     """run full conversion pipeline."""
-    epub_path = Path(args.epub)
-    workdir = Path(args.output)
-    audiobook_dir = Path(args.audiobook) if args.audiobook else workdir / "audiobook"
+    epub_path, workdir = get_pipeline_paths(args)
+    audiobook_dir = workdir / "audiobook"
     chapters = get_chapters(args)
 
     # extract
     print(f"extract: parsing {epub_path.name}...")
     book, cover_data = parse_epub(epub_path)
-    print(f"extract: extracting {len(book.chapters)} chapters to {workdir}/...")
+    print(f"extract: extracting {len(book.chapters)} chapters to {workdir}/extract/...")
     save_extracted(book, workdir, cover_data)
 
     # synthesize
     config = get_tts_config(args)
-    print("synthesize: synthesizing chapters...")
+    print(f"synthesize: synthesizing chapters in {workdir}/synthesize/...")
     synthesize_chapters(
         workdir, config, chapters, args.instruct, args.pooled, force=args.force
     )
 
     # export
     print(f"export: exporting chapters to {audiobook_dir}/...")
-    count = export_audiobook(workdir, audiobook_dir, args.bitrate, force=args.force)
+    new, skipped = export_audiobook(
+        workdir, audiobook_dir, args.bitrate, force=args.force
+    )
 
-    print(f"convert: done - {count} chapter(s) exported")
+    msg = f"convert: done - {new} chapter(s) exported"
+    if skipped > 0:
+        msg += f" ({skipped} skipped)"
+    print(msg)
 
 
 def main():
@@ -183,41 +208,42 @@ def main():
     p_download.add_argument(
         "--all", action="store_true", help="download all models (custom, design, base)"
     )
-    add_common_args(p_download, group="logging")
+    add_common_args(p_download, group="runtime")
     p_download.set_defaults(func=cmd_download)
 
     # chapters command
     p_chapters = subparsers.add_parser("chapters", help="list chapters in an epub file")
     p_chapters.add_argument("epub", help="path to epub file")
-    add_common_args(p_chapters, group="logging")
+    add_common_args(p_chapters, group="runtime")
     p_chapters.set_defaults(func=cmd_chapters)
 
     # extract command
     p_extract = subparsers.add_parser("extract", help="extract chapter text from epub")
     p_extract.add_argument("epub", help="path to epub file")
     p_extract.add_argument("-o", "--output", required=True, help="output workdir")
-    add_common_args(p_extract, group="logging")
+    add_common_args(p_extract, group="runtime")
     p_extract.set_defaults(func=cmd_extract)
 
     # dramatize command
     p_dramatize = subparsers.add_parser(
         "dramatize", help="run full dramatization pipeline"
     )
-    p_dramatize.add_argument("workdir", help="path to workdir")
-    add_common_args(p_dramatize, group="llm")
-    add_common_args(p_dramatize, group="chapters")
-    add_common_args(p_dramatize, group="tts")
+    add_common_args(p_dramatize, group="paths")
+    add_common_args(p_dramatize, group="scripting")
+    add_common_args(p_dramatize, group="chapter_selection")
+    add_common_args(p_dramatize, group="tts_engine")
     add_common_args(p_dramatize, group="cast")
-    add_common_args(p_dramatize, group="logging")
+    add_common_args(p_dramatize, group="export")
+    add_common_args(p_dramatize, group="runtime")
     p_dramatize.set_defaults(func=cmd_dramatize)
 
     # cast command
     p_cast = subparsers.add_parser("cast", help="generate cast list from book text")
     p_cast.add_argument("workdir", help="path to workdir")
-    add_common_args(p_cast, group="llm")
-    add_common_args(p_cast, group="chapters")
+    add_common_args(p_cast, group="scripting")
+    add_common_args(p_cast, group="chapter_selection")
     add_common_args(p_cast, group="cast")
-    add_common_args(p_cast, group="logging")
+    add_common_args(p_cast, group="runtime")
     p_cast.set_defaults(func=cmd_cast)
 
     # audition command
@@ -226,15 +252,15 @@ def main():
     )
     p_audition.add_argument("workdir", help="path to workdir")
     add_common_args(p_audition, group="cast")
-    add_common_args(p_audition, group="logging")
+    add_common_args(p_audition, group="runtime")
     p_audition.set_defaults(func=cmd_audition)
 
     # script command
     p_script = subparsers.add_parser("script", help="dramatize chapters into scripts")
     p_script.add_argument("workdir", help="path to workdir")
-    add_common_args(p_script, group="llm")
-    add_common_args(p_script, group="chapters")
-    add_common_args(p_script, group="logging")
+    add_common_args(p_script, group="scripting")
+    add_common_args(p_script, group="chapter_selection")
+    add_common_args(p_script, group="runtime")
     p_script.set_defaults(func=cmd_script)
 
     # perform command
@@ -242,10 +268,10 @@ def main():
         "perform", help="synthesize audio from dramatized scripts"
     )
     p_perform.add_argument("workdir", help="path to workdir")
-    add_common_args(p_perform, group="chapters")
-    add_common_args(p_perform, group="tts")
+    add_common_args(p_perform, group="chapter_selection")
+    add_common_args(p_perform, group="tts_engine")
     add_common_args(p_perform, group="cast")
-    add_common_args(p_perform, group="logging")
+    add_common_args(p_perform, group="runtime")
     p_perform.set_defaults(func=cmd_perform)
 
     # validate command
@@ -259,8 +285,8 @@ def main():
     p_validate.add_argument(
         "--hallucinated", action="store_true", help="check for hallucinated segments"
     )
-    add_common_args(p_validate, group="chapters")
-    add_common_args(p_validate, group="logging")
+    add_common_args(p_validate, group="chapter_selection")
+    add_common_args(p_validate, group="runtime")
     p_validate.set_defaults(func=cmd_validate)
 
     # fix command
@@ -286,33 +312,34 @@ def main():
         metavar="N",
         help="paragraphs of context before/after missing text (alternative to --context-chars)",
     )
-    add_common_args(p_fix, group="llm")
-    add_common_args(p_fix, group="chapters")
-    add_common_args(p_fix, group="logging")
+    add_common_args(p_fix, group="scripting")
+    add_common_args(p_fix, group="chapter_selection")
+    add_common_args(p_fix, group="runtime")
     p_fix.set_defaults(func=cmd_fix)
 
     # synthesize command
     p_synth = subparsers.add_parser(
         "synthesize", help="convert text files to wav audio"
     )
-    p_synth.add_argument("workdir", help="path to workdir with txt files")
-    add_common_args(p_synth, group="chapters")
-    add_common_args(p_synth, group="speaker")
-    add_common_args(p_synth, group="instruct")
-    add_common_args(p_synth, group="tts")
-    add_common_args(p_synth, group="logging")
+    p_synth.add_argument("workdir", help="path to workdir")
+    add_common_args(p_synth, group="chapter_selection")
+    add_common_args(p_synth, group="delivery")
+    add_common_args(p_synth, group="tts_engine")
+    add_common_args(p_synth, group="runtime")
     p_synth.set_defaults(func=cmd_synthesize)
 
     # export command
     p_export = subparsers.add_parser("export", help="convert wav files to mp3")
-    p_export.add_argument("workdir", help="path to workdir with wav files")
+    p_export.add_argument("workdir", help="path to workdir")
     p_export.add_argument(
-        "-o", "--output", required=True, help="output directory for mp3 files"
+        "-o",
+        "--output",
+        help="output directory for mp3 files (default: <workdir>/audiobook/)",
     )
     p_export.add_argument(
         "-b", "--bitrate", default=DEFAULT_BITRATE, help="mp3 bitrate"
     )
-    add_common_args(p_export, group="logging")
+    add_common_args(p_export, group="runtime")
     p_export.set_defaults(func=cmd_export)
 
     # clean command
@@ -321,24 +348,17 @@ def main():
     p_clean.add_argument(
         "-n", "--dry-run", action="store_true", help="show what would be removed"
     )
-    add_common_args(p_clean, group="logging")
+    add_common_args(p_clean, group="runtime")
     p_clean.set_defaults(func=cmd_clean)
 
     # convert command (full pipeline)
     p_convert = subparsers.add_parser("convert", help="run full conversion pipeline")
-    p_convert.add_argument("epub", help="path to epub file")
-    p_convert.add_argument(
-        "-o", "--output", required=True, help="workdir for intermediate files"
-    )
-    p_convert.add_argument("--audiobook", help="output directory for mp3 files")
-    p_convert.add_argument(
-        "-b", "--bitrate", default=DEFAULT_BITRATE, help="mp3 bitrate"
-    )
-    add_common_args(p_convert, group="chapters")
-    add_common_args(p_convert, group="speaker")
-    add_common_args(p_convert, group="instruct")
-    add_common_args(p_convert, group="logging")
-    add_common_args(p_convert, group="tts")
+    add_common_args(p_convert, group="paths")
+    add_common_args(p_convert, group="export")
+    add_common_args(p_convert, group="chapter_selection")
+    add_common_args(p_convert, group="delivery")
+    add_common_args(p_convert, group="runtime")
+    add_common_args(p_convert, group="tts_engine")
     p_convert.set_defaults(func=cmd_convert)
 
     args = parser.parse_args()

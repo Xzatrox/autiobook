@@ -35,8 +35,9 @@ autiobook extract book.epub -o workdir/
 ```
 
 creates:
-- `workdir/metadata.json` - book metadata
-- `workdir/NN_Title.txt` - chapter text files
+- `workdir/extract/metadata.json` - book metadata
+- `workdir/extract/NN_Title.txt` - chapter text files
+- `workdir/extract/state.json` - resumability state
 
 ### synthesize
 
@@ -47,9 +48,8 @@ autiobook synthesize workdir/ -s Ryan
 ```
 
 creates:
-- `workdir/NN_Title.wav` - audio files
-
-skips existing wav files (idempotent).
+- `workdir/synthesize/NN_Title.wav` - audio files
+- `workdir/synthesize/state.json` - resumability state
 
 ### dramatize / cast / audition / script / validate / fix / perform
 
@@ -95,8 +95,7 @@ autiobook export workdir/ -o audiobook/
 
 creates:
 - `audiobook/NN_Title.mp3` - mp3 files with id3 tags
-
-skips existing mp3 files (idempotent).
+- `workdir/export/state.json` - resumability state
 
 ### convert
 
@@ -178,3 +177,35 @@ cli entry point with subcommands.
 - `SAMPLE_RATE = 24000` - qwen3-tts output rate
 - `PARAGRAPH_PAUSE_MS = 500` - pause between paragraphs
 - `DEFAULT_BITRATE = "192k"` - mp3 encoding bitrate
+
+## workdir structure
+
+Intermediate files are organized into subdirectories by command:
+
+```
+workdir/
+├── extract/               # extracted text and metadata
+│   ├── metadata.json
+│   ├── cover.jpg
+│   ├── NN_Title.txt
+│   └── state.json
+├── cast/                  # character list and analysis state
+│   ├── cast.json
+│   └── state.json
+├── audition/              # character voice samples
+│   ├── Character.wav
+│   └── state.json
+├── script/                # dramatized scripts (speaker segments)
+│   ├── NN_Title.json
+│   └── state.json
+├── perform/               # dramatized audio performance
+│   ├── NN_Title.wav
+│   ├── segments/          # segment cache
+│   └── state.json
+└── synthesize/            # standard mono-voice audio
+    ├── NN_Title.wav
+    ├── segments/          # segment cache
+    └── state.json
+```
+
+Each command is fully resumable based on content hashes stored in `state.json`.

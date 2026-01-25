@@ -5,10 +5,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List
+from typing import List, cast
 
-import soundfile as sf
-from tqdm import tqdm
+import soundfile as sf  # type: ignore
+from tqdm import tqdm  # type: ignore
 
 from .audio import (
     check_segment_exists,
@@ -27,6 +27,7 @@ from .config import (
     VOICE_DESIGN_MODEL,
     WAV_EXT,
 )
+from .epub import load_metadata
 from .llm import (
     Character,
     ScriptSegment,
@@ -36,18 +37,19 @@ from .llm import (
     split_text_smart,
 )
 from .pooling import AudioTask, process_pooled_tasks
-from .resume import ResumeManager, compute_hash
+from .resume import ResumeManager, compute_hash, get_command_dir, list_chapters
 from .tts import (
     TTSConfig,
     TTSEngine,
     chunk_text,
 )
-from .utils import get_chapters, get_tts_config, iter_pending_chapters
+from .utils import get_chapters, get_tts_config
 
 
 def save_cast(workdir: Path, cast: List[Character]) -> None:
     """save cast to json file."""
-    path = workdir / CAST_FILE
+
+    path = get_command_dir(workdir, "cast") / CAST_FILE
 
     characters = []
     for c in cast:
@@ -55,9 +57,8 @@ def save_cast(workdir: Path, cast: List[Character]) -> None:
             "name": c.name,
             "description": c.description,
             "audition_line": c.audition_line,
+            "aliases": c.aliases,
         }
-        if c.aliases:
-            char_data["aliases"] = c.aliases
         characters.append(char_data)
 
     data = {
@@ -71,18 +72,26 @@ def save_cast(workdir: Path, cast: List[Character]) -> None:
 
 def load_cast(workdir: Path) -> List[Character]:
     """load cast from json file."""
-    path = workdir / CAST_FILE
+
+    path = get_command_dir(workdir, "cast") / CAST_FILE
     if not path.exists():
-        return [Character(**c) for c in DEFAULT_CAST]
+        return [
+            Character(
+                name=c["name"],
+                description=c["description"],
+                audition_line=c["audition_line"],
+            )
+            for c in DEFAULT_CAST
+        ]
 
     with open(path, encoding="utf-8") as f:
         data = json.load(f)
 
     # handle legacy list format
     if isinstance(data, list):
-        chars = []
+        chars_legacy = []
         for c in data:
-            chars.append(
+            chars_legacy.append(
                 Character(
                     name=c["name"],
                     description=c["description"],
@@ -90,12 +99,12 @@ def load_cast(workdir: Path) -> List[Character]:
                     aliases=c.get("aliases"),
                 )
             )
-        return chars
+        return chars_legacy
 
     # handle dict format
-    chars = []
-    for c in data.get("characters", []):
-        chars.append(
+    chars_dict = []
+    for c in cast(dict, data).get("characters", []):
+        chars_dict.append(
             Character(
                 name=c["name"],
                 description=c["description"],
@@ -103,15 +112,14 @@ def load_cast(workdir: Path) -> List[Character]:
                 aliases=c.get("aliases"),
             )
         )
-    return chars
+    return chars_dict
 
 
 def save_script(
-    chapter_file: Path,
+    script_path: Path,
     segments: List[ScriptSegment],
 ) -> None:
     """save dramatized script for a chapter."""
-    script_path = chapter_file.with_suffix(SCRIPT_EXT)
     data = {
         "version": 2,
         "segments": [
@@ -127,16 +135,15 @@ def save_script(
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def load_script(chapter_file: Path) -> List[ScriptSegment]:
+def load_script(script_path: Path) -> List[ScriptSegment]:
     """load dramatized script for a chapter."""
-    script_path = chapter_file.with_suffix(SCRIPT_EXT)
     if not script_path.exists():
         return []
 
     with open(script_path, encoding="utf-8") as f:
         data = json.load(f)
 
-    return [ScriptSegment(**s) for s in data.get("segments", [])]
+    return [ScriptSegment(**s) for s in cast(dict, data).get("segments", [])]
 
 
 def _merge_character_into_cast(
@@ -254,12 +261,12 @@ def run_cast_generation(
     force: bool = False,
 ) -> List[Character]:
     """analyze book and generate cast list."""
+
     existing_cast = load_cast(workdir)
+    resume = ResumeManager.for_command(workdir, "cast", force=force)
 
-    # Initialize resume manager for cast generation
-    resume = ResumeManager(workdir / "cast_analysis.json", force=force)
-
-    txt_files = sorted(workdir.glob(f"*{TXT_EXT}"))
+    extract_dir = get_command_dir(workdir, "extract")
+    txt_files = sorted(extract_dir.glob(f"*{TXT_EXT}"))
     if not txt_files:
         print("no extracted text files found!")
         return existing_cast
@@ -291,7 +298,7 @@ def run_cast_generation(
         text_hash = compute_hash(text)
         chapter_hashes[num] = text_hash
 
-        if force or not resume.is_fresh(num, text_hash):
+        if force or not resume.is_fresh(str(num), text_hash):
             chapters_to_process.append(num)
 
     if not chapters_to_process:
@@ -313,6 +320,8 @@ def run_cast_generation(
     updated_count = 0
     merged_count = 0
     total_processed = 0
+
+    final_cast = existing_cast
 
     # process in batches to avoid overwhelming the LLM
     batch_size = 3
@@ -343,7 +352,8 @@ def run_cast_generation(
             summary = "\n".join(lines)
 
         print(
-            f"  batch {batch_num}/{num_batches}: chapters {batch_chapters} ({len(current_cast)} characters known)..."
+            f"  batch {batch_num}/{num_batches}: chapters {batch_chapters} "
+            f"({len(current_cast)} characters known)..."
         )
 
         batch_cast = generate_cast(
@@ -367,7 +377,7 @@ def run_cast_generation(
 
         # update analyzed chapters in resume manager
         for num in batch_chapters:
-            resume.update(num, chapter_hashes[num])
+            resume.update(str(num), chapter_hashes[num])
         resume.save()
 
         final_cast = list(cast_map.values())
@@ -398,18 +408,17 @@ def run_auditions(
     force: bool = False,
 ) -> None:
     """generate voice samples for cast."""
+
     if cast is None:
         cast = load_cast(workdir)
 
-    voices_dir = workdir / "voices"
-    voices_dir.mkdir(parents=True, exist_ok=True)
-    resume = ResumeManager(voices_dir / "manifest.json", force=force)
+    voices_dir = get_command_dir(workdir, "audition")
+    resume = ResumeManager.for_command(workdir, "audition", force=force)
 
     if not cast:
-        if (workdir / CAST_FILE).exists():
-            print(
-                f"cast file found at {workdir / CAST_FILE} but contains no characters."
-            )
+        cast_path = get_command_dir(workdir, "cast") / CAST_FILE
+        if cast_path.exists():
+            print(f"cast file found at {cast_path} but contains no characters.")
         else:
             print("no cast found. run 'cast' command first.")
         return
@@ -474,6 +483,7 @@ def run_script_generation(
     force: bool = False,
 ) -> bool:
     """generate dramatized scripts for chapters incrementally."""
+
     cast = load_cast(workdir)
     # Cast hash for dependency tracking
     # Only name and aliases affect the script generation prompt
@@ -487,19 +497,19 @@ def run_script_generation(
         ]
     )
 
-    resume = ResumeManager(workdir / "script_generation.json", force=force)
+    resume = ResumeManager.for_command(workdir, "script", force=force)
+    script_dir = get_command_dir(workdir, "script")
+    extract_dir = get_command_dir(workdir, "extract")
 
     if not cast:
-        if (workdir / CAST_FILE).exists():
-            print(
-                f"cast file found at {workdir / CAST_FILE} but contains no characters."
-            )
+        if (get_command_dir(workdir, "cast") / CAST_FILE).exists():
+            print("cast file found but contains no characters.")
         else:
             print("no cast found. run 'cast' command first.")
         return False
 
     # collect chapters to process
-    txt_files = sorted(workdir.glob(f"*{TXT_EXT}"))
+    txt_files = sorted(extract_dir.glob(f"*{TXT_EXT}"))
 
     # Pre-scan to see what's done
     completed_count = 0
@@ -517,16 +527,16 @@ def run_script_generation(
         # Input hash depends on text and cast
         input_hash = compute_hash({"text": text, "cast_hash": cast_hash})
 
-        script_path = txt_path.with_suffix(SCRIPT_EXT)
+        script_path = script_dir / (txt_path.stem + SCRIPT_EXT)
 
         if (
             not force
             and script_path.exists()
-            and resume.is_fresh(chapter_num, input_hash)
+            and resume.is_fresh(str(chapter_num), input_hash)
         ):
             completed_count += 1
         else:
-            to_process.append((chapter_num, txt_path, text, input_hash))
+            to_process.append((chapter_num, txt_path, script_path, text, input_hash))
 
     if not to_process:
         print(f"script: all {completed_count + len(to_process)} chapters up to date.")
@@ -539,12 +549,14 @@ def run_script_generation(
     total_segments = 0
     chapters_processed = 0
 
-    for i, (chapter_num, txt_path, text, input_hash) in enumerate(to_process):
+    for i, (chapter_num, txt_path, script_path, text, input_hash) in enumerate(
+        to_process
+    ):
         chunks = split_text_smart(text)
         total_chunks = len(chunks)
 
         # Intermediate state file
-        chunks_file = txt_path.with_suffix(".chunks.json")
+        chunks_file = script_path.with_suffix(".chunks.json")
 
         existing_chunks = []
         if not force and chunks_file.exists():
@@ -587,7 +599,7 @@ def run_script_generation(
                 if verbose:
                     speakers = set(s.speaker for s in chunk_segments)
                     tqdm.write(
-                        f"      chunk {j+1}: generated {len(chunk_segments)} segments. "
+                        f"      chunk {j + 1}: generated {len(chunk_segments)} segments. "
                         f"Speakers: {', '.join(sorted(speakers))}"
                     )
                 current_chunks.append(chunk_segments)
@@ -620,10 +632,10 @@ def run_script_generation(
 
         # Flatten and save final script
         all_segments = [s for chunk in current_chunks for s in chunk]
-        save_script(txt_path, all_segments)
+        save_script(script_path, all_segments)
 
         # Mark as done
-        resume.update(chapter_num, input_hash)
+        resume.update(str(chapter_num), input_hash)
         resume.save()
 
         # Cleanup
@@ -648,12 +660,11 @@ def run_performance(
     force: bool = False,
 ) -> None:
     """synthesize audio from scripts with segment-level resume."""
+
     cast = load_cast(workdir)
     if not cast:
-        if (workdir / CAST_FILE).exists():
-            print(
-                f"cast file found at {workdir / CAST_FILE} but contains no characters."
-            )
+        if (get_command_dir(workdir, "cast") / CAST_FILE).exists():
+            print("cast file found but contains no characters.")
         else:
             print("no cast found. run 'cast' command first.")
         return
@@ -666,9 +677,11 @@ def run_performance(
             for alias in c.aliases:
                 cast_map[alias] = c
 
-    voices_dir = workdir / "voices"
+    voices_dir = get_command_dir(workdir, "audition")
+    script_dir = get_command_dir(workdir, "script")
+    perform_dir = get_command_dir(workdir, "perform")
 
-    if not voices_dir.exists():
+    if not any(voices_dir.glob(f"*{WAV_EXT}")):
         print("no voices found. run 'audition' command first.")
         return
 
@@ -688,17 +701,27 @@ def run_performance(
     engine = TTSEngine(config)
 
     # Collect all pending chapters first
-    pending = list(
-        iter_pending_chapters(
-            workdir, chapters, skip_message="audio exists", force=force
+    metadata = load_metadata(workdir)
+    pending = [
+        (s, t)
+        for _, s, t in list_chapters(
+            metadata,
+            script_dir,
+            perform_dir,
+            chapters_filter=chapters,
+            source_ext=SCRIPT_EXT,
+            target_ext=WAV_EXT,
         )
-    )
+    ]
     if not pending:
-        print("perform: all chapters up to date.")
+        print("perform: no scripts found.")
         return
 
+    # resume manager for assembly
+    resume = ResumeManager.for_command(workdir, "perform", force=force)
+
     # always use pooled strategy for best performance/caching
-    _perform_pooled(engine, pending, voices_dir, cast_map, force=force)
+    _perform_pooled(engine, pending, voices_dir, cast_map, resume=resume, force=force)
 
 
 def _perform_pooled(
@@ -706,11 +729,13 @@ def _perform_pooled(
     pending: list[tuple[Path, Path]],
     voices_dir: Path,
     cast_map: dict[str, Character],
+    resume: ResumeManager | None = None,
     force: bool = False,
 ) -> None:
     """synthesize chapters using unified pooled batching and segment caching."""
     tasks = []
     chapter_sequences = []  # (wav_path, list_of_segment_hashes)
+    needs_assembly = {}  # wav_path -> manifest_hash
 
     # Pre-calculate character hashes for stable identification
     char_hashes = {}
@@ -732,22 +757,21 @@ def _perform_pooled(
     for txt_path, wav_path in pending:
         segments = load_script(txt_path)
         if not segments:
-            print(f"skipping {txt_path.name} (no script found)")
             continue
 
         chapter_hashes = []
 
         for segment in segments:
-            char = cast_map.get(segment.speaker) or cast_map.get("Narrator")
-            char_name = char.name if char else ""
+            char_opt = cast_map.get(segment.speaker) or cast_map.get("Narrator")
+            char_name = char_opt.name if char_opt else ""
             char_hash = char_hashes.get(char_name, "")
 
             # Identify the voice ref audio
             ref_audio_path = None
             ref_text = None
-            if char:
-                ref_audio_path = voices_dir / f"{char.name}{WAV_EXT}"
-                ref_text = char.audition_line
+            if char_opt:
+                ref_audio_path = voices_dir / f"{char_opt.name}{WAV_EXT}"
+                ref_text = char_opt.audition_line
 
             # Segment hash input
             seg_data = {
@@ -788,23 +812,42 @@ def _perform_pooled(
                             voice_ref_audio=ref_audio_path,
                             voice_ref_text=ref_text,
                             instruct=segment.instruction
-                            or char.description,  # fallback instruct
+                            or (
+                                char_opt.description if char_opt else ""
+                            ),  # fallback instruct
                         )
                     )
 
-        chapter_sequences.append((wav_path, chapter_hashes))
+        manifest_hash = compute_hash(chapter_hashes)
+        chapter_sequences.append((wav_path, chapter_hashes, manifest_hash))
+
+        if force or not wav_path.exists():
+            needs_assembly[wav_path] = manifest_hash
+        elif resume and not resume.is_fresh(str(wav_path), manifest_hash):
+            needs_assembly[wav_path] = manifest_hash
 
     if tasks:
         process_pooled_tasks(engine, tasks, desc="performing segments", force=force)
+        # Any chapter whose segments were regenerated must be re-assembled
+        for task in tasks:
+            for wav_path, hashes, manifest_hash in chapter_sequences:
+                if task.segment_hash in hashes:
+                    needs_assembly[wav_path] = manifest_hash
 
     # Assemble chapters
-    for wav_path, hashes in chapter_sequences:
+    for wav_path, hashes, manifest_hash in chapter_sequences:
+        if wav_path not in needs_assembly:
+            continue
+
         try:
             audio_segments = [load_segment(segments_dir, h) for h in hashes]
             combined = concatenate_audio(
                 audio_segments, SAMPLE_RATE, PARAGRAPH_PAUSE_MS
             )
             sf.write(str(wav_path), combined, SAMPLE_RATE)
+            if resume:
+                resume.update(str(wav_path), manifest_hash)
+                resume.save()
             print(f"  -> {wav_path.name}")
         except Exception as e:
             print(f"failed to assemble {wav_path.name}: {e}")
@@ -865,15 +908,13 @@ def cmd_perform(args):
 
 def _normalize_text(text: str) -> str:
     """normalize text for comparison by collapsing whitespace."""
-    import re
-
     text = re.sub(r"\s+", " ", text)
     return text.strip()
 
 
 def _strip_boundary_quotes(text: str) -> str:
     """strip quotes and whitespace from text boundaries for comparison."""
-    return text.strip(' \t\n"\'""' "")
+    return text.strip(' \t\n"\'""')
 
 
 def _tokenize_with_positions(text: str) -> List[tuple[str, int, int]]:
@@ -930,14 +971,14 @@ class ValidationResult:
     hallucinated: list[int]  # indices of segments not found in source
 
 
-def validate_script(txt_path: Path) -> ValidationResult:
+def validate_script(txt_path: Path, script_path: Path) -> ValidationResult:
     """validate that script segments match the source text using fuzzy diffing.
 
     uses difflib to align normalized words between source and script.
     identifies missing text (source words not in script) and hallucinated
     segments (segments with low word match ratio).
     """
-    segments = load_script(txt_path)
+    segments = load_script(script_path)
     if not segments:
         return ValidationResult(
             missing=[(f"no script found for {txt_path.name}", 0, 0)], hallucinated=[]
@@ -1008,8 +1049,8 @@ def validate_script(txt_path: Path) -> ValidationResult:
             # 2. Same split offset (or very close/sequential?)
             #    Actually, if we merge, we keep the FIRST insertion point (last_ins, last_offset).
             #    But we should only merge if the gap is just punctuation/whitespace.
-            #    And typically they will be at the same insertion point if they are contiguous in source
-            #    but skipped in script.
+            #    And typically they will be at the same insertion point if they are
+            #    contiguous in source but skipped in script.
             if (
                 current_ins == last_ins
                 and current_offset == last_offset
@@ -1057,9 +1098,13 @@ def run_validation(
 
     returns a dict mapping chapter names to ValidationResult.
     """
-    txt_files = sorted(workdir.glob(f"*{TXT_EXT}"))
+
+    extract_dir = get_command_dir(workdir, "extract")
+    script_dir = get_command_dir(workdir, "script")
+
+    txt_files = sorted(extract_dir.glob(f"*{TXT_EXT}"))
     if not txt_files:
-        print("no text files found in workdir!")
+        print("no text files found in extract/!")
         return {}
 
     # filter to relevant chapters
@@ -1071,10 +1116,10 @@ def run_validation(
             continue
         if chapters and chapter_num not in chapters:
             continue
-        script_path = txt_path.with_suffix(SCRIPT_EXT)
+        script_path = script_dir / (txt_path.stem + SCRIPT_EXT)
         if not script_path.exists():
             continue
-        chapters_to_check.append(txt_path)
+        chapters_to_check.append((txt_path, script_path))
 
     if not chapters_to_check:
         print("no chapters with scripts to validate")
@@ -1084,8 +1129,10 @@ def run_validation(
     total_missing = 0
     total_hallucinated = 0
 
-    for txt_path in tqdm(chapters_to_check, desc="validating", unit="chapter"):
-        result = validate_script(txt_path)
+    for txt_path, script_path in tqdm(
+        chapters_to_check, desc="validating", unit="chapter"
+    ):
+        result = validate_script(txt_path, script_path)
         results[txt_path.name] = result
 
         if check_missing:
@@ -1095,7 +1142,7 @@ def run_validation(
 
     # print results
     print()
-    for txt_path in chapters_to_check:
+    for txt_path, script_path in chapters_to_check:
         result = results[txt_path.name]
         issues = []
 
@@ -1112,7 +1159,7 @@ def run_validation(
                     print(f"  [missing {i} @ {idx}+{offset}] {fragment}")
 
             if check_hallucinated:
-                segments = load_script(txt_path)
+                segments = load_script(script_path)
                 for idx in result.hallucinated:
                     seg = segments[idx]
                     print(f"  [hallucinated {idx}] {seg.speaker}: {seg.text}")
@@ -1250,19 +1297,21 @@ def run_fix(
     verbose: bool = False,
 ) -> None:
     """fix script issues by filling missing segments and removing hallucinated ones."""
+
     cast = load_cast(workdir)
     if not cast:
-        if (workdir / CAST_FILE).exists():
-            print(
-                f"cast file found at {workdir / CAST_FILE} but contains no characters."
-            )
+        if (get_command_dir(workdir, "cast") / CAST_FILE).exists():
+            print("cast file found but contains no characters.")
         else:
             print("no cast found. run 'cast' command first.")
         return
 
-    txt_files = sorted(workdir.glob(f"*{TXT_EXT}"))
+    extract_dir = get_command_dir(workdir, "extract")
+    script_dir = get_command_dir(workdir, "script")
+
+    txt_files = sorted(extract_dir.glob(f"*{TXT_EXT}"))
     if not txt_files:
-        print("no text files found in workdir!")
+        print("no text files found in extract/!")
         return
 
     # filter to relevant chapters
@@ -1274,10 +1323,10 @@ def run_fix(
             continue
         if chapters and chapter_num not in chapters:
             continue
-        script_path = txt_path.with_suffix(SCRIPT_EXT)
+        script_path = script_dir / (txt_path.stem + SCRIPT_EXT)
         if not script_path.exists():
             continue
-        chapters_to_fix.append(txt_path)
+        chapters_to_fix.append((txt_path, script_path))
 
     if not chapters_to_fix:
         print("no chapters with scripts to fix")
@@ -1286,13 +1335,13 @@ def run_fix(
     total_added = 0
     total_removed = 0
 
-    for txt_path in tqdm(chapters_to_fix, desc="fixing", unit="chapter"):
-        result = validate_script(txt_path)
+    for txt_path, script_path in tqdm(chapters_to_fix, desc="fixing", unit="chapter"):
+        result = validate_script(txt_path, script_path)
 
         if not result.missing and not result.hallucinated:
             continue
 
-        segments = load_script(txt_path)
+        segments = load_script(script_path)
         original_text = txt_path.read_text(encoding="utf-8")
 
         # remove hallucinated segments first (in reverse order to preserve indices)
@@ -1306,17 +1355,17 @@ def run_fix(
                 del segments[idx]
                 total_removed += 1
             # checkpoint after removing hallucinations
-            save_script(txt_path, segments)
+            save_script(script_path, segments)
 
         # re-validate to get updated missing list after hallucination removal
         if fix_missing:
-            result = validate_script(txt_path)
+            result = validate_script(txt_path, script_path)
             if result.missing:
                 print(
                     f"\n{txt_path.name}: filling {len(result.missing)} missing fragment(s)..."
                 )
                 # reload segments in case they changed
-                segments = load_script(txt_path)
+                segments = load_script(script_path)
 
                 # Sort missing fragments by insertion index and offset in descending order
                 # so that insertions/splits don't affect indices of subsequent operations
@@ -1396,7 +1445,7 @@ def run_fix(
 
                             total_added += len(new_segments)
                             # checkpoint after each fragment
-                            save_script(txt_path, segments)
+                            save_script(script_path, segments)
 
                     except Exception as e:
                         print(f"    failed: {e}")
@@ -1451,7 +1500,7 @@ def dramatize_book(
     force: bool = False,
 ) -> None:
     """run full dramatization pipeline."""
-    cast = run_cast_generation(
+    run_cast_generation(
         workdir, api_base, api_key, model, chapters, verbose=verbose, force=force
     )
     # generate scripts first before auditions
@@ -1465,9 +1514,7 @@ def dramatize_book(
     run_fix(workdir, api_base, api_key, model, chapters, verbose=verbose)
 
     # now run auditions
-    run_auditions(
-        workdir, verbose=verbose, force=force
-    )
+    run_auditions(workdir, verbose=verbose, force=force)
     run_performance(
         workdir,
         chapters,

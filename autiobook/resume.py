@@ -3,9 +3,46 @@
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Callable, Dict, List, TypeVar
+from typing import Any, Callable, Dict, List, TypeVar, cast
 
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
+
+from .config import STATE_FILE
+
+
+def get_command_dir(workdir: Path, command: str) -> Path:
+    """get and create directory for a specific command."""
+    path = workdir / command
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def list_chapters(
+    metadata: Dict[str, Any],
+    source_dir: Path,
+    target_dir: Path,
+    chapters_filter: list[int] | None = None,
+    source_ext: str = ".txt",
+    target_ext: str = ".wav",
+) -> List[tuple[int, Path, Path]]:
+    """list (index, source, target) for chapters based on metadata."""
+    results = []
+    for c in metadata.get("chapters", []):
+        idx = c["index"]
+        if chapters_filter and idx not in chapters_filter:
+            continue
+
+        base = c.get("filename_base")
+        if not base:
+            continue
+
+        source_path = source_dir / (base + source_ext)
+        target_path = target_dir / (base + target_ext)
+
+        if source_path.exists():
+            results.append((idx, source_path, target_path))
+
+    return results
 
 
 def compute_hash(obj: Any) -> str:
@@ -19,7 +56,7 @@ def load_state(path: Path) -> Dict[str, Any]:
         return {}
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f)
+            return cast(Dict[str, Any], json.load(f))
     except Exception:
         return {}
 
@@ -38,6 +75,14 @@ class ResumeManager:
         self.state = load_state(state_path)
         self.dirty = False
         self.force = force
+
+    @classmethod
+    def for_command(
+        cls, workdir: Path, command: str, force: bool = False
+    ) -> "ResumeManager":
+        """create a resume manager for a specific command."""
+        state_path = get_command_dir(workdir, command) / STATE_FILE
+        return cls(state_path, force=force)
 
     def is_fresh(self, key: str, current_hash: str) -> bool:
         """check if key exists and matches current hash."""

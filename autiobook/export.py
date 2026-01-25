@@ -3,9 +3,9 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from mutagen.id3 import APIC, ID3
-from mutagen.mp3 import MP3
-from pydub import AudioSegment
+from mutagen.id3 import APIC, ID3  # type: ignore
+from mutagen.mp3 import MP3  # type: ignore
+from pydub import AudioSegment  # type: ignore
 
 from .config import COVER_FILE, DEFAULT_BITRATE, MP3_EXT, WAV_EXT
 from .epub import load_metadata
@@ -47,17 +47,18 @@ def wav_to_mp3(
         if mp3.tags is None:
             mp3.add_tags()
 
-        cover_data = cover_path.read_bytes()
-        mp3.tags.add(
-            APIC(
-                encoding=3,  # utf-8
-                mime="image/jpeg",
-                type=3,  # front cover
-                desc="Cover",
-                data=cover_data,
+        if mp3.tags is not None:
+            cover_data = cover_path.read_bytes()
+            mp3.tags.add(
+                APIC(
+                    encoding=3,  # utf-8
+                    mime="image/jpeg",
+                    type=3,  # front cover
+                    desc="Cover",
+                    data=cover_data,
+                )
             )
-        )
-        mp3.save()
+            mp3.save()
 
 
 def export_audiobook(
@@ -65,8 +66,10 @@ def export_audiobook(
     output_dir: Path,
     bitrate: str = DEFAULT_BITRATE,
     force: bool = False,
-) -> int:
+) -> tuple[int, int]:
     """export all chapters as mp3 files with cover art."""
+    from .resume import ResumeManager, compute_hash, get_command_dir, list_chapters
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
     metadata = load_metadata(workdir)
@@ -75,27 +78,62 @@ def export_audiobook(
     chapters = metadata["chapters"]
     total_tracks = len(chapters)
 
-    # check for cover image
-    cover_path = workdir / COVER_FILE
-    if not cover_path.exists():
-        cover_path = None
+    # try performance dir first (dramatized), then synthesize dir
+    perform_dir = get_command_dir(workdir, "perform")
+    synth_dir = get_command_dir(workdir, "synthesize")
 
+    source_dir = perform_dir
+    chapter_paths = list_chapters(
+        metadata, source_dir, output_dir, source_ext=WAV_EXT, target_ext=MP3_EXT
+    )
+
+    if not chapter_paths:
+        source_dir = synth_dir
+        chapter_paths = list_chapters(
+            metadata, source_dir, output_dir, source_ext=WAV_EXT, target_ext=MP3_EXT
+        )
+
+    if not chapter_paths:
+        print(f"export: no wav files found in {perform_dir} or {synth_dir}")
+        return 0, 0
+
+    # check for cover image in extract dir
+    extract_dir = get_command_dir(workdir, "extract")
+    cover_path_val = extract_dir / COVER_FILE
+    final_cover_path: Path | None = cover_path_val if cover_path_val.exists() else None
+
+    resume = ResumeManager.for_command(workdir, "export", force=force)
     newly_exported_count = 0
     skipped_count = 0
-    chapters_to_process = 0
 
-    for chapter_info in chapters:
-        filename_base = chapter_info["filename_base"]
-        wav_path = workdir / f"{filename_base}{WAV_EXT}"
-        mp3_path = output_dir / f"{filename_base}{MP3_EXT}"
+    # build index for metadata lookup
+    chapter_info_map = {c["index"]: c for c in chapters}
 
-        # skip if wav doesn't exist (not synthesized yet)
-        if not wav_path.exists():
+    for idx, wav_path, mp3_path in chapter_paths:
+        chapter_info = chapter_info_map.get(idx)
+        if not chapter_info:
             continue
-        chapters_to_process += 1
+
+        # Compute hash for resumability
+        # include wav size, mtime, and metadata
+        export_data = {
+            "wav_size": wav_path.stat().st_size,
+            "wav_mtime": wav_path.stat().st_mtime,
+            "title": chapter_info["title"],
+            "album": book_title,
+            "artist": author,
+            "track": idx,
+            "bitrate": bitrate,
+            "cover": str(final_cover_path) if final_cover_path else None,
+        }
+        chapter_hash = compute_hash(export_data)
 
         # skip if already exported (idempotent)
-        if not force and mp3_path.exists():
+        if (
+            not force
+            and mp3_path.exists()
+            and resume.is_fresh(str(mp3_path), chapter_hash)
+        ):
             skipped_count += 1
             continue
 
@@ -109,13 +147,15 @@ def export_audiobook(
             total_tracks=total_tracks,
         )
 
-        wav_to_mp3(wav_path, mp3_path, mp3_meta, bitrate, cover_path)
+        wav_to_mp3(wav_path, mp3_path, mp3_meta, bitrate, final_cover_path)
+        resume.update(str(mp3_path), chapter_hash)
+        resume.save()
         print(f"  -> {mp3_path.name}")
         newly_exported_count += 1
 
-    if newly_exported_count == 0 and skipped_count == 0 and chapters_to_process == 0:
-        print("export: no chapters to export.")
+    if newly_exported_count == 0 and skipped_count == 0:
+        print("export: no chapters found.")
     elif newly_exported_count == 0 and skipped_count > 0:
         print(f"export: all {skipped_count} chapters up to date.")
 
-    return newly_exported_count + skipped_count
+    return newly_exported_count, skipped_count

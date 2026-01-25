@@ -1,9 +1,10 @@
 """audio processing utilities."""
 
 from pathlib import Path
+from typing import cast
 
 import numpy as np
-import soundfile as sf
+import soundfile as sf  # type: ignore
 
 from .config import (
     SAMPLE_RATE,
@@ -30,7 +31,7 @@ def concatenate_audio(
         if i < len(audio_chunks) - 1:
             result.append(pause)
 
-    return np.concatenate(result)
+    return cast(np.ndarray, np.concatenate(result))
 
 
 def normalize_audio(audio: np.ndarray) -> np.ndarray:
@@ -75,4 +76,4 @@ def load_segment(segments_dir: Path, segment_hash: str) -> np.ndarray:
     if not path.exists():
         raise FileNotFoundError(f"segment {segment_hash} not found in {segments_dir}")
     audio, _ = sf.read(str(path))
-    return audio.astype(np.float32)
+    return cast(np.ndarray, audio).astype(np.float32)

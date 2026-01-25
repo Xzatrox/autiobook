@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import numpy as np
-from tqdm import tqdm
+from tqdm import tqdm  # type: ignore
 
 from .audio import (
     check_segment_exists,
@@ -90,7 +90,13 @@ def process_pooled_tasks(
 
                 except Exception as e:
                     print(f"batch generation failed: {e}")
-                    # Fallback to silence for now to allow progress
-                    silence = np.zeros(1, dtype=np.float32)
-                    for _ in batch:
+                    # fallback to silence to allow assembly to proceed
+                    silence = np.zeros(int(0.1 * SAMPLE_RATE), dtype=np.float32)
+                    for task in batch:
+                        save_segment(
+                            task.segments_dir,
+                            task.segment_hash,
+                            silence,
+                            SAMPLE_RATE,
+                        )
                         pbar.update(1)

@@ -46,23 +46,37 @@ METADATA_FILE = "metadata.json"
 CAST_FILE = "cast.json"
 SCRIPT_EXT = ".json"
 COVER_FILE = "cover.jpg"
-CHUNKS_DIR = "chunks"
 SEGMENTS_DIR = "segments"
+STATE_FILE = "state.json"
 
 DEFAULT_CAST = [
     {
         "name": "Narrator",
-        "description": "Warm, articulate male voice; mature age; measured slow pace; authoritative yet compassionate.",
-        "audition_line": "The history of the valley wasn't written in books, but in the layers of sediment resting quietly beneath the river.",
+        "description": (
+            "Warm, articulate male voice; mature age; measured slow pace; "
+            "authoritative yet compassionate."
+        ),
+        "audition_line": (
+            "The history of the valley wasn't written in books, but in the layers "
+            "of sediment resting quietly beneath the river."
+        ),
     },
     {
         "name": "Extra Female",
         "description": "Neutral, casual, female voice, young adult; lower than average pitch.",
-        "audition_line": "I really don't think we should be going in there without a map; honestly, it looks dangerous.",
+        "audition_line": (
+            "I really don't think we should be going in there without a map; "
+            "honestly, it looks dangerous."
+        ),
     },
     {
         "name": "Extra Male",
-        "description": "Gruff, textured baritone voice; older adult; relaxed slow speed; weary but kind.",
-        "audition_line": "Just hold the light steady for a minute. I've got to get this wire connected before the generator fails.",
+        "description": (
+            "Gruff, textured baritone voice; older adult; relaxed slow speed; weary but kind."
+        ),
+        "audition_line": (
+            "Just hold the light steady for a minute. I've got to get this wire "
+            "connected before the generator fails."
+        ),
     },
 ]

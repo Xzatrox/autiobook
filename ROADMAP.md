@@ -1,5 +1,7 @@
 # ROADMAP
 
+[x] refactor dramatize/convert commands to DRY flags and improve output directory inference
+[x] improve LLM prompts for smaller models
 ```
 [@] bash end-to-end test script
 

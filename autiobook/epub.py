@@ -4,10 +4,11 @@ import json
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
-import ebooklib
-from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning
-from ebooklib import epub
+import ebooklib  # type: ignore
+from bs4 import BeautifulSoup, XMLParsedAsHTMLWarning  # type: ignore
+from ebooklib import epub  # type: ignore
 
 from .config import (
     CONTENT_TAGS,
@@ -107,25 +108,25 @@ def extract_cover(book: epub.EpubBook) -> bytes | None:
     for cover_id in ["cover", "cover-image", "coverimage"]:
         item = book.get_item_with_id(cover_id)
         if item and item.get_content():
-            return item.get_content()
+            return cast(bytes, item.get_content())
 
     # try cover metadata reference
     cover_meta = book.get_metadata("OPF", "cover")
     if cover_meta:
-        cover_id = cover_meta[0][0] if cover_meta[0] else None
-        if cover_id:
-            item = book.get_item_with_id(cover_id)
+        cover_id_val = cover_meta[0][0] if cover_meta[0] else None
+        if cover_id_val:
+            item = book.get_item_with_id(str(cover_id_val))
             if item and item.get_content():
-                return item.get_content()
+                return cast(bytes, item.get_content())
 
     # fallback: find first image item with 'cover' in name
     for item in book.get_items_of_type(ebooklib.ITEM_IMAGE):
         if "cover" in item.get_name().lower():
-            return item.get_content()
+            return cast(bytes, item.get_content())
 
     # last resort: first image
     for item in book.get_items_of_type(ebooklib.ITEM_IMAGE):
-        return item.get_content()
+        return cast(bytes, item.get_content())
 
     return None
 
@@ -136,21 +137,21 @@ def parse_epub(path: Path) -> tuple[Book, bytes | None]:
     cover_data = extract_cover(book)
 
     # extract metadata
-    title = book.get_metadata("DC", "title")
-    title = title[0][0] if title else path.stem
+    title_meta = book.get_metadata("DC", "title")
+    title = str(title_meta[0][0]) if title_meta and title_meta[0] else path.stem
 
-    author = book.get_metadata("DC", "creator")
-    author = author[0][0] if author else "Unknown"
+    author_meta = book.get_metadata("DC", "creator")
+    author = str(author_meta[0][0]) if author_meta and author_meta[0] else "Unknown"
 
-    language = book.get_metadata("DC", "language")
-    language = language[0][0] if language else "en"
+    language_meta = book.get_metadata("DC", "language")
+    language = str(language_meta[0][0]) if language_meta and language_meta[0] else "en"
 
     # extract chapters from spine order
     chapters = []
     index = 1
 
     for item in book.get_items_of_type(ebooklib.ITEM_DOCUMENT):
-        content = item.get_content()
+        content = cast(bytes, item.get_content())
         text = extract_text_from_html(content)
 
         # skip short/empty chapters
@@ -172,29 +173,45 @@ def parse_epub(path: Path) -> tuple[Book, bytes | None]:
 
 def save_extracted(book: Book, workdir: Path, cover_data: bytes | None = None) -> None:
     """save extracted chapters and cover to workdir."""
-    workdir.mkdir(parents=True, exist_ok=True)
+    from .resume import get_command_dir
+
+    extract_dir = get_command_dir(workdir, "extract")
 
     # save metadata
-    metadata_path = workdir / METADATA_FILE
-    with open(metadata_path, "w") as f:
+    metadata_path = extract_dir / METADATA_FILE
+    with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(book.to_metadata(), f, indent=2)
 
     # save cover image
     if cover_data:
-        cover_path = workdir / COVER_FILE
+        cover_path = extract_dir / COVER_FILE
         with open(cover_path, "wb") as f:
             f.write(cover_data)
         print(f"  saved cover image ({len(cover_data)} bytes)")
 
     # save chapter text files
     for chapter in book.chapters:
-        txt_path = workdir / f"{chapter.filename_base}{TXT_EXT}"
-        with open(txt_path, "w") as f:
+        txt_path = extract_dir / f"{chapter.filename_base}{TXT_EXT}"
+        with open(txt_path, "w", encoding="utf-8") as f:
             f.write(chapter.text)
 
 
 def load_metadata(workdir: Path) -> dict:
     """load metadata from workdir."""
-    metadata_path = workdir / METADATA_FILE
-    with open(metadata_path) as f:
-        return json.load(f)
+    from .config import UNSAFE_FILENAME_CHARS
+    from .resume import get_command_dir
+
+    metadata_path = get_command_dir(workdir, "extract") / METADATA_FILE
+    with open(metadata_path, encoding="utf-8") as f:
+        data = cast(dict, json.load(f))
+
+    # ensure filename_base exists for all chapters (backwards compatibility)
+    for c in data.get("chapters", []):
+        if "filename_base" not in c:
+            idx = c["index"]
+            title = c.get("title", f"Chapter {idx}")
+            safe_title = UNSAFE_FILENAME_CHARS.sub("_", title)
+            safe_title = safe_title.strip().replace(" ", "_")[:50]
+            c["filename_base"] = f"{idx:02d}_{safe_title}"
+
+    return data
