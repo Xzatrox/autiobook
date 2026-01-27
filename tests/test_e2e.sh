@@ -4,10 +4,10 @@ set -euo pipefail
 
 TEST_EPUB="./testdata/isaac-asimov_short-science-fiction_advanced.epub"
 WORKDIR="./testdata_workdir/iisaac-asimov_short-science-fiction/"
-OUTDIR="./testdata_audiobooks/isaac-asimov_short-science-fiction/"
+OUTDIR="$WORKDIR/export/"
 
 cleanup() {
-	rm -rf "$WORKDIR" "$OUTDIR"
+	rm -rf "$WORKDIR"
 }
 
 die() {

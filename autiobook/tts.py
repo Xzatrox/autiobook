@@ -48,9 +48,7 @@ def get_default_device() -> str:
         if device_count > 0:
             device_type = "cuda"
         else:
-            print(
-                "WARNING: CUDA/ROCm libraries detected but no devices found. Fallback to CPU."
-            )
+            print("WARNING: CUDA/ROCm libraries detected but no devices found. Fallback to CPU.")
             device_type = "cpu"
     elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
         device_type = "mps"
@@ -125,9 +123,7 @@ class TTSEngine:
         dtype = torch.bfloat16 if is_cuda else torch.float32
         attn_impl = "sdpa" if is_rocm() or not is_cuda else "flash_attention_2"
 
-        print(
-            f"loading {self.config.model_name} on {self.config.device} ({dtype}, {attn_impl})..."
-        )
+        print(f"loading {self.config.model_name} on {self.config.device} ({dtype}, {attn_impl})...")
         self._model = Qwen3TTSModel.from_pretrained(
             self.config.model_name,
             device_map=self.config.device,
@@ -379,9 +375,7 @@ def synthesize_chapters(
     metadata = load_metadata(workdir)
     pending = [
         (s, t)
-        for _, s, t in list_chapters(
-            metadata, extract_dir, synth_dir, chapters_filter=chapters
-        )
+        for _, s, t in list_chapters(metadata, extract_dir, synth_dir, chapters_filter=chapters)
     ]
 
     if not pending:

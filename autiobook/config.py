@@ -1,5 +1,6 @@
 """shared constants and configuration."""
 
+import os
 import re
 
 # epub parsing
@@ -26,7 +27,8 @@ MAX_CHUNK_SIZE = 500  # balance between coherence and decode speed
 SAMPLE_RATE = 24000
 
 # llm settings
-DEFAULT_LLM_MODEL = "gpt-4o"
+DEFAULT_LLM_MODEL = os.getenv("AUTIOBOOK_MODEL", "openai/gpt-4o")
+DEFAULT_THINKING_BUDGET = int(os.getenv("AUTIOBOOK_THINKING_BUDGET", "0"))
 LLM_MAX_RETRIES = 3
 LLM_RETRY_DELAY = 1.0  # initial delay in seconds, doubles on each retry
 
@@ -42,6 +44,7 @@ UNSAFE_FILENAME_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 TXT_EXT = ".txt"
 WAV_EXT = ".wav"
 MP3_EXT = ".mp3"
+M4B_EXT = ".m4b"
 METADATA_FILE = "metadata.json"
 CAST_FILE = "characters.json"
 SCRIPT_EXT = ".json"

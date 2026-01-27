@@ -35,6 +35,6 @@ precommit: format lint test
 
 clean:
 	rm -rf build/ dist/ *.egg-info/
-	rm -rf workdir_test/ audiobook_test/
+	rm -rf workdir_test/
 	rm -rf .venv/
 	find . -type d -name __pycache__ -exec rm -rf {} +

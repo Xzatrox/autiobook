@@ -77,11 +77,11 @@ creates:
 convert wav files to mp3 with metadata.
 
 ```
-autiobook export workdir/ -o audiobook/
+autiobook export workdir/
 ```
 
 creates:
-- `audiobook/NN_Title.mp3` - mp3 files with id3 tags
+- `workdir/export/NN_Title.mp3` - mp3 files with id3 tags
 - `workdir/export/state.json` - resumability state
 
 
@@ -113,7 +113,7 @@ autiobook fix workdir/ --api-key sk-...
 autiobook perform workdir/
 
 # 8. export to mp3
-autiobook export workdir/ -o audiobook/
+autiobook export workdir/
 ```
 
 or run the full dramatization pipeline in one go:
@@ -168,10 +168,10 @@ Vivian, Ryan, Sunny, Aria, Bella, Nova, Echo, Finn, Atlas
 
 ## output
 
-creates one mp3 file per chapter:
+creates one mp3 file per chapter in `workdir/export/`:
 
 ```
-audiobook/
+workdir/export/
 ├── 01_Introduction.mp3
 ├── 02_Chapter_One.mp3
 └── ...
@@ -203,9 +203,12 @@ workdir/
 │   ├── NN_Title.wav
 │   ├── segments/          # segment cache
 │   └── state.json
-└── synthesize/            # standard mono-voice audio
-    ├── NN_Title.wav
-    ├── segments/          # segment cache
+├── synthesize/            # standard mono-voice audio
+│   ├── NN_Title.wav
+│   ├── segments/          # segment cache
+│   └── state.json
+└── export/                # final mp3 output
+    ├── NN_Title.mp3
     └── state.json
 ```
 

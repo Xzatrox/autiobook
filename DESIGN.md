@@ -105,11 +105,11 @@ autiobook fix workdir/ --missing --context-paragraphs 3  # paragraph-based conte
 convert wav files to mp3 with metadata.
 
 ```
-autiobook export workdir/ -o audiobook/
+autiobook export workdir/
 ```
 
 creates:
-- `audiobook/NN_Title.mp3` - mp3 files with id3 tags
+- `workdir/export/NN_Title.mp3` - mp3 files with id3 tags
 - `workdir/export/state.json` - resumability state
 
 ### convert
@@ -225,9 +225,12 @@ workdir/
 │   ├── NN_Title.wav
 │   ├── segments/          # segment cache
 │   └── state.json
-└── synthesize/            # standard mono-voice audio
-    ├── NN_Title.wav
-    ├── segments/          # segment cache
+├── synthesize/            # standard mono-voice audio
+│   ├── NN_Title.wav
+│   ├── segments/          # segment cache
+│   └── state.json
+└── export/                # final mp3 output
+    ├── NN_Title.mp3
     └── state.json
 ```
 

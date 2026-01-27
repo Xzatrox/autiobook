@@ -3,7 +3,6 @@
 from pathlib import Path
 from typing import List
 
-import numpy as np
 import soundfile as sf  # type: ignore
 from tqdm import tqdm  # type: ignore
 
@@ -18,7 +17,7 @@ from .dramatize import load_cast
 from .llm import Character
 from .pooling import AudioTask
 from .resume import ResumeManager, compute_hash, get_command_dir
-from .tts import TTSConfig, TTSEngine, TXT_EXT
+from .tts import TTSConfig, TTSEngine
 
 
 def _showcase_voice(
@@ -34,9 +33,7 @@ def _showcase_voice(
     showcase_dir = get_command_dir(workdir, "showcase")
 
     # check if cast member
-    char = next(
-        (c for c in (cast_list or []) if c.name.lower() == voice_name.lower()), None
-    )
+    char = next((c for c in (cast_list or []) if c.name.lower() == voice_name.lower()), None)
 
     # resolve voice path (audition dir)
     voice_path = None
@@ -87,16 +84,12 @@ def _showcase_voice(
                     print(
                         f"    warning: no reference text found for {voice_name}, cloning may vary"
                     )
-                    ref_text = (
-                        "The quick brown fox jumps over the lazy dog."  # dummy ref text
-                    )
+                    ref_text = "The quick brown fox jumps over the lazy dog."  # dummy ref text
 
                 audio, sr = engine.clone_voice(input_text, str(voice_path), ref_text)
             else:
                 # base voice mode
-                audio, sr = engine.synthesize(
-                    input_text, instruct=instruct, speaker=voice_name
-                )
+                audio, sr = engine.synthesize(input_text, instruct=instruct, speaker=voice_name)
 
             sf.write(str(wav_path), audio, sr)
             print(f"    saved to {wav_path}")
@@ -250,11 +243,7 @@ def run_showcase(
             task_hash = compute_hash(task_data)
             resume_key = f"{char.name}/{emotion}"
 
-            if (
-                not force
-                and wav_path.exists()
-                and resume.is_fresh(resume_key, task_hash)
-            ):
+            if not force and wav_path.exists() and resume.is_fresh(resume_key, task_hash):
                 skipped_count += 1
                 if verbose:
                     print(f"  skipping {resume_key} (up to date)")

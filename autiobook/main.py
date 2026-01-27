@@ -4,6 +4,11 @@ import argparse
 import sys
 from pathlib import Path
 
+# load .env before other imports so env vars are available for config
+from .env import load_env
+
+load_env()
+
 from .config import (
     BASE_MODEL,
     DEFAULT_BITRATE,
@@ -70,7 +75,7 @@ def cmd_extract(args):
 def _run_pipeline(args, process_fn, name):
     """common helper for full pipelines."""
     epub_path, workdir = get_pipeline_paths(args)
-    audiobook_dir = workdir / "audiobook"
+    export_dir = workdir / "export"
     chapters = get_chapters(args)
 
     ensure_extracted(epub_path, workdir, force=args.force)
@@ -78,9 +83,9 @@ def _run_pipeline(args, process_fn, name):
     config = get_tts_config(args)
     process_fn(workdir, config, chapters)
 
-    print(f"export: exporting chapters to {audiobook_dir}/...")
+    print(f"export: exporting chapters to {export_dir}/...")
     new, skipped = export_audiobook(
-        workdir, audiobook_dir, args.bitrate, force=args.force
+        workdir, export_dir, args.bitrate, force=args.force, m4b=args.m4b
     )
 
     msg = f"{name}: done - {new} chapter(s) exported"
@@ -104,6 +109,7 @@ def cmd_dramatize(args):
             pooled=args.pooled,
             verbose=args.verbose,
             force=args.force,
+            thinking_budget=args.thinking_budget,
         )
 
     _run_pipeline(args, process_fn, "dramatize")
@@ -114,9 +120,7 @@ def cmd_convert(args):
 
     def process_fn(workdir, config, chapters):
         print(f"synthesize: synthesizing chapters in {workdir}/synthesize/...")
-        synthesize_chapters(
-            workdir, config, chapters, args.instruct, args.pooled, force=args.force
-        )
+        synthesize_chapters(workdir, config, chapters, args.instruct, args.pooled, force=args.force)
 
     _run_pipeline(args, process_fn, "convert")
 
@@ -128,9 +132,7 @@ def cmd_synthesize(args):
     config = get_tts_config(args)
 
     print(f"synthesize: synthesizing chapters in {workdir}/synthesize/...")
-    synthesize_chapters(
-        workdir, config, chapters, args.instruct, args.pooled, force=args.force
-    )
+    synthesize_chapters(workdir, config, chapters, args.instruct, args.pooled, force=args.force)
 
     print("synthesize: done")
 
@@ -138,10 +140,12 @@ def cmd_synthesize(args):
 def cmd_export(args):
     """convert wav files to mp3 with metadata."""
     workdir = Path(args.workdir)
-    output_dir = Path(args.output) if args.output else workdir / "audiobook"
+    output_dir = Path(args.output) if args.output else workdir / "export"
 
     print(f"export: exporting chapters to {output_dir}/...")
-    new, skipped = export_audiobook(workdir, output_dir, args.bitrate, force=args.force)
+    new, skipped = export_audiobook(
+        workdir, output_dir, args.bitrate, force=args.force, m4b=args.m4b
+    )
 
     msg = f"export: {new} chapter(s) exported"
     if skipped > 0:
@@ -245,7 +249,13 @@ def main():
             cmd_audition,
             "generate character voice samples",
             [("cast",), ("runtime",)],
-            [(("workdir",), {"help": "path to workdir"})],
+            [
+                (("workdir",), {"help": "path to workdir"}),
+                (
+                    ("--audition-line",),
+                    {"help": "override audition line for all characters"},
+                ),
+            ],
         ),
         "showcase": (
             cmd_showcase,
@@ -322,6 +332,10 @@ def main():
                 (
                     ("-b", "--bitrate"),
                     {"default": DEFAULT_BITRATE, "help": "mp3 bitrate"},
+                ),
+                (
+                    ("--m4b",),
+                    {"action": "store_true", "help": "export as m4b audiobook"},
                 ),
             ],
         ),

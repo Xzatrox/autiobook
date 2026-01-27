@@ -1,7 +1,11 @@
 # ROADMAP
 
+[@] change default audiobook output folder from 'audiobook/' to 'export/'
+[@] multi-provider LLM support with litellm and .env configuration
+[ ] audition command: add --audition-line flag to override per-character audition lines
 [@] showcase command: generate emotion samples for each character voice
 [@] chapter-ordered segment scheduling with early assembly
+[x] m4b export support with chapter markers
 [x] refactor dramatize/convert commands to DRY flags and improve output directory inference
 [x] improve LLM prompts for smaller models
 ```

@@ -4,12 +4,10 @@ set -euo pipefail
 
 TEST_EPUB="./testdata/isaac-asimov_short-science-fiction_advanced.epub"
 WORKDIR="./testdata_workdir/isaac-asimov_short-science-fiction/"
-OUTDIR="./testdata_audiobooks/isaac-asimov_short-science-fiction/"
-
-LLM_FLAGS=(--api-base http://localhost:7860/v1 --api-key fake --model gpt-oss-120b:Q8_0)
+OUTDIR="$WORKDIR/export/"
 
 cleanup() {
-	rm -rf "$WORKDIR" "$OUTDIR"
+	rm -rf "$WORKDIR"
 }
 
 die() {
@@ -43,7 +41,7 @@ echo "extracted $txt_count chapter(s)"
 
 echo ""
 echo "--- test: cast ---"
-autiobook cast "${LLM_FLAGS[@]}" "$WORKDIR" || die "cast command failed"
+autiobook cast "$WORKDIR" || die "cast command failed"
 
 echo ""
 echo "--- test: audition ---"
@@ -60,11 +58,11 @@ echo "generated showcase for $showcase_dirs character(s)"
 
 echo ""
 echo "--- test: script ---"
-autiobook script "${LLM_FLAGS[@]}" "$WORKDIR" || die "script command failed"
+autiobook script "$WORKDIR" || die "script command failed"
 
 echo ""
 echo "--- test: fix ---"
-autiobook fix "${LLM_FLAGS[@]}" "$WORKDIR" || die "fix command failed"
+autiobook fix "$WORKDIR" || die "fix command failed"
 
 echo ""
 echo "--- test: perform ---"
@@ -97,13 +95,13 @@ echo "--- test: idempotency ---"
 # run extract again, should not fail
 autiobook extract "$TEST_EPUB" -o "$WORKDIR" || die "idempotent extract failed"
 # run cast again, should skip existing
-autiobook cast "${LLM_FLAGS[@]}" "$WORKDIR" || die "idempotent cast failed"
+autiobook cast "$WORKDIR" || die "idempotent cast failed"
 # run audition again, should skip existing
 autiobook audition "$WORKDIR" || die "idempotent audition failed"
 # run showcase again, should skip existing
 autiobook showcase "$WORKDIR" || die "idempotent showcase failed"
 # run script again, should skip existing
-autiobook script "${LLM_FLAGS[@]}" "$WORKDIR" || die "idempotent script failed"
+autiobook script "$WORKDIR" || die "idempotent script failed"
 # run perform again, should skip existing
 autiobook perform "$WORKDIR" || die "idempotent perform failed"
 # run export again, should skip existing
@@ -113,7 +111,7 @@ echo "idempotency check passed"
 echo ""
 echo "--- test: dramatize (full pipeline) ---"
 cleanup
-autiobook convert "${LLM_FLAGS[@]}" "$TEST_EPUB" -o "$WORKDIR" --audiobook "$OUTDIR" -c 1 || die "convert command failed"
+autiobook dramatize "$TEST_EPUB" -o "$WORKDIR" -c 1 || die "dramatize command failed"
 [[ -f "$WORKDIR/extract/metadata.json" ]] || die "dramatize: metadata.json not created"
 mp3_count=$(find "$OUTDIR" -name "*.mp3" 2>/dev/null | wc -l)
 [[ $mp3_count -gt 0 ]] || die "convert: no mp3 files created"

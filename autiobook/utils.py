@@ -8,6 +8,7 @@ from .config import (
     DEFAULT_LLM_MODEL,
     DEFAULT_MODEL,
     DEFAULT_SPEAKER,
+    DEFAULT_THINKING_BUDGET,
     MAX_CHUNK_SIZE,
 )
 
@@ -33,9 +34,7 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
         g.add_argument("-c", "--chapters", help="chapter range (e.g., 1-5, 1,3,5)")
 
     if group in ["all", "tts_engine"]:
-        g.add_argument(
-            "--batch-size", type=int, default=64, help="batch size for tts generation"
-        )
+        g.add_argument("--batch-size", type=int, default=64, help="batch size for tts generation")
         g.add_argument(
             "--chunk-size",
             type=int,
@@ -76,19 +75,21 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
             "--voice",
             help="cloned voice (name from audition/)",
         )
-        g.add_argument(
-            "-i", "--instruct", help="instruction for tts (string or file path)"
-        )
+        g.add_argument("-i", "--instruct", help="instruction for tts (string or file path)")
 
     if group in ["all", "scripting"]:
-        g.add_argument("--api-base", help="openai api base url")
-        g.add_argument("--api-key", help="openai api key")
+        g.add_argument("--api-base", help="llm api base url")
+        g.add_argument("--api-key", help="llm api key")
         g.add_argument("--model", default=DEFAULT_LLM_MODEL, help="llm model name")
+        g.add_argument(
+            "--thinking-budget",
+            type=int,
+            default=DEFAULT_THINKING_BUDGET,
+            help="tokens for extended thinking (0 = disabled)",
+        )
 
     if group in ["all", "runtime"]:
-        g.add_argument(
-            "-v", "--verbose", action="store_true", help="enable verbose logging"
-        )
+        g.add_argument("-v", "--verbose", action="store_true", help="enable verbose logging")
         g.add_argument(
             "-f",
             "--force",
@@ -108,6 +109,7 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
         from .config import DEFAULT_BITRATE
 
         g.add_argument("-b", "--bitrate", default=DEFAULT_BITRATE, help="mp3 bitrate")
+        g.add_argument("--m4b", action="store_true", help="export as m4b audiobook with metadata")
 
 
 def get_pipeline_paths(args) -> tuple[Path, Path]:

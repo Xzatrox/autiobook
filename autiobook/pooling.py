@@ -144,9 +144,7 @@ def _assemble_chapter(
     """assemble a chapter from its segments. returns True on success."""
     print(f"assembling {state.wav_path.name}...")
     try:
-        audio = concatenate_audio(
-            [load_segment(state.segments_dir, h) for h in state.hashes]
-        )
+        audio = concatenate_audio([load_segment(state.segments_dir, h) for h in state.hashes])
         sf.write(str(state.wav_path), audio, SAMPLE_RATE)
         if resume:
             resume.update(str(state.wav_path), state.manifest_hash)

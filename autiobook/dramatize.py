@@ -17,9 +17,10 @@ from .config import (
     BASE_MODEL,
     CAST_FILE,
     DEFAULT_CAST,
+    DEFAULT_LLM_MODEL,
+    DEFAULT_THINKING_BUDGET,
     SCRIPT_EXT,
     TXT_EXT,
-    SAMPLE_RATE,
     VOICE_DESIGN_MODEL,
     WAV_EXT,
 )
@@ -241,6 +242,7 @@ def _process_cast_batch(
     api_key: str | None,
     model: str | None,
     verbose: bool,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> int:
     """process a single batch of chapters for cast generation."""
     full_sample = ""
@@ -258,7 +260,12 @@ def _process_cast_batch(
     )
 
     batch_cast = generate_cast(
-        full_sample, api_base, api_key, model or "gpt-4o", existing_cast_summary=summary
+        full_sample,
+        api_base,
+        api_key,
+        model or DEFAULT_LLM_MODEL,
+        existing_cast_summary=summary,
+        thinking_budget=thinking_budget,
     )
 
     added, updated, merged = 0, 0, 0
@@ -282,6 +289,7 @@ def run_cast_generation(
     chapters: list[int] | None = None,
     verbose: bool = False,
     force: bool = False,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> List[Character]:
     """analyze book and generate cast list."""
     existing_cast = load_cast(workdir)
@@ -311,9 +319,7 @@ def run_cast_generation(
     print(f"cast: analyzing {len(chapters_to_process)} chapters...")
 
     cast_map = {c.name.lower(): c for c in existing_cast}
-    alias_map = {
-        a.lower(): c.name.lower() for c in existing_cast if c.aliases for a in c.aliases
-    }
+    alias_map = {a.lower(): c.name.lower() for c in existing_cast if c.aliases for a in c.aliases}
 
     batch_size = 3
     for batch_start in range(0, len(chapters_to_process), batch_size):
@@ -332,6 +338,7 @@ def run_cast_generation(
             api_key,
             model,
             verbose,
+            thinking_budget,
         )
 
         for num in batch_chapters:
@@ -353,6 +360,7 @@ def run_auditions(
     cast: List[Character] | None = None,
     verbose: bool = False,
     force: bool = False,
+    audition_line: str | None = None,
 ) -> None:
     """generate voice samples for cast."""
 
@@ -371,9 +379,7 @@ def run_auditions(
         return
 
     if len(cast) <= 3 and cast[0].name == "Narrator":
-        print(
-            "warning: using default cast (Narrator + Extras). run 'cast' to generate full cast."
-        )
+        print("warning: using default cast (Narrator + Extras). run 'cast' to generate full cast.")
 
     engine = TTSEngine(TTSConfig(model_name=VOICE_DESIGN_MODEL))
 
@@ -385,11 +391,14 @@ def run_auditions(
     for char in tqdm(cast, desc="casting voices"):
         wav_path = voices_dir / f"{char.name}{WAV_EXT}"
 
+        # use override line if provided, otherwise per-character line
+        line = audition_line if audition_line else char.audition_line
+
         # input data for this character's voice
         char_data = {
             "name": char.name,
             "description": char.description,
-            "audition_line": char.audition_line,
+            "audition_line": line,
         }
         char_hash = compute_hash(char_data)
 
@@ -400,12 +409,10 @@ def run_auditions(
             continue
 
         if verbose:
-            tqdm.write(f"  generating {char.name}: '{char.audition_line}'")
+            tqdm.write(f"  generating {char.name}: '{line}'")
 
         try:
-            audio, sr = engine.design_voice(
-                text=char.audition_line, instruct=char.description
-            )
+            audio, sr = engine.design_voice(text=line, instruct=char.description)
             sf.write(str(wav_path), audio, sr)
             resume.update(char.name, char_hash)
             resume.save()
@@ -428,6 +435,7 @@ def run_script_generation(
     chapters: list[int] | None = None,
     verbose: bool = False,
     force: bool = False,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> bool:
     """generate dramatized scripts for chapters incrementally."""
 
@@ -476,11 +484,7 @@ def run_script_generation(
 
         script_path = script_dir / (txt_path.stem + SCRIPT_EXT)
 
-        if (
-            not force
-            and script_path.exists()
-            and resume.is_fresh(str(chapter_num), input_hash)
-        ):
+        if not force and script_path.exists() and resume.is_fresh(str(chapter_num), input_hash):
             completed_count += 1
         else:
             to_process.append((chapter_num, txt_path, script_path, text, input_hash))
@@ -489,16 +493,12 @@ def run_script_generation(
         print(f"script: all {completed_count + len(to_process)} chapters up to date.")
         return True
 
-    print(
-        f"script: {len(to_process)} chapters to process, {completed_count} already complete"
-    )
+    print(f"script: {len(to_process)} chapters to process, {completed_count} already complete")
 
     total_segments = 0
     chapters_processed = 0
 
-    for i, (chapter_num, txt_path, script_path, text, input_hash) in enumerate(
-        to_process
-    ):
+    for i, (chapter_num, txt_path, script_path, text, input_hash) in enumerate(to_process):
         chunks = split_text_smart(text)
         total_chunks = len(chunks)
 
@@ -506,12 +506,7 @@ def run_script_generation(
         current_segments = []
         completed_chunks = 0
         partial = resume.get_partial(str(chapter_num))
-        if (
-            not force
-            and partial
-            and partial.get("hash") == input_hash
-            and script_path.exists()
-        ):
+        if not force and partial and partial.get("hash") == input_hash and script_path.exists():
             completed_chunks = partial.get("chunks_done", 0)
             current_segments = load_script(script_path)
 
@@ -520,9 +515,7 @@ def run_script_generation(
         else:
             status = "starting"
 
-        print(
-            f"  [{i + 1}/{len(to_process)}] {txt_path.name}: {status} ({total_chunks} chunks)"
-        )
+        print(f"  [{i + 1}/{len(to_process)}] {txt_path.name}: {status} ({total_chunks} chunks)")
 
         for j in tqdm(
             range(completed_chunks, total_chunks),
@@ -534,7 +527,12 @@ def run_script_generation(
             chunk_text = chunks[j]
             try:
                 chunk_segments = process_script_chunk(
-                    chunk_text, cast, api_base, api_key, model or "gpt-4o"
+                    chunk_text,
+                    cast,
+                    api_base,
+                    api_key,
+                    model or DEFAULT_LLM_MODEL,
+                    thinking_budget,
                 )
                 if verbose:
                     speakers = set(s.speaker for s in chunk_segments)
@@ -556,7 +554,11 @@ def run_script_generation(
                 resume.save()
 
             except Exception as e:
-                print(f"\n    chunk {j + 1} FAILED: {e}")
+                print(f"\n    chunk {j + 1} FAILED: {type(e).__name__}: {e}")
+                if verbose:
+                    import traceback
+
+                    traceback.print_exc()
                 return False
 
         # Mark as done (this also clears partial state)
@@ -680,9 +682,7 @@ def _perform_pooled(
             char_name = char_opt.name if char_opt else ""
             char_hash = char_hashes.get(char_name, "")
 
-            ref_audio_path = (
-                voices_dir / f"{char_opt.name}{WAV_EXT}" if char_opt else None
-            )
+            ref_audio_path = voices_dir / f"{char_opt.name}{WAV_EXT}" if char_opt else None
             ref_text = char_opt.audition_line if char_opt else None
 
             seg_data = {
@@ -693,11 +693,7 @@ def _perform_pooled(
             }
 
             text_chunks = (
-                [
-                    c
-                    for c in chunk_text(segment.text, engine.config.chunk_size)
-                    if c.strip()
-                ]
+                [c for c in chunk_text(segment.text, engine.config.chunk_size) if c.strip()]
                 if len(segment.text) > engine.config.chunk_size
                 else [segment.text]
             )
@@ -716,8 +712,7 @@ def _perform_pooled(
                         segments_dir=segments_dir,
                         voice_ref_audio=ref_audio_path,
                         voice_ref_text=ref_text,
-                        instruct=segment.instruction
-                        or (char_opt.description if char_opt else ""),
+                        instruct=segment.instruction or (char_opt.description if char_opt else ""),
                     )
                 )
         chapter_data.append((wav_path, chapter_tasks))
@@ -741,6 +736,7 @@ def cmd_cast(args):
         chapters=chapters,
         verbose=args.verbose,
         force=args.force,
+        thinking_budget=args.thinking_budget,
     )
 
 
@@ -749,6 +745,7 @@ def cmd_audition(args):
         Path(args.workdir),
         verbose=args.verbose,
         force=args.force,
+        audition_line=getattr(args, "audition_line", None),
     )
 
 
@@ -763,6 +760,7 @@ def cmd_script(args):
         chapters=chapters,
         verbose=args.verbose,
         force=args.force,
+        thinking_budget=args.thinking_budget,
     )
 
 
@@ -803,9 +801,7 @@ def _tokenize_with_positions(text: str) -> List[tuple[str, int, int]]:
     return tokens
 
 
-def _find_text_in_source(
-    needle: str, haystack: str, start_pos: int = 0
-) -> tuple[int, int] | None:
+def _find_text_in_source(needle: str, haystack: str, start_pos: int = 0) -> tuple[int, int] | None:
     """find needle in haystack using token alignment.
 
     returns (start, end) positions in the original haystack, or None if not found.
@@ -822,9 +818,7 @@ def _find_text_in_source(
         return None
     haystack_words = [t[0] for t in haystack_tokens]
 
-    matcher = difflib.SequenceMatcher(
-        None, needle_words, haystack_words, autojunk=False
-    )
+    matcher = difflib.SequenceMatcher(None, needle_words, haystack_words, autojunk=False)
     # find the best match for the needle words in the haystack
     match = matcher.find_longest_match(0, len(needle_words), 0, len(haystack_words))
 
@@ -910,9 +904,7 @@ def validate_script(txt_path: Path, script_path: Path) -> ValidationResult:
         missing_ranges.sort()
         merged = [missing_ranges[0]]
 
-        for current_start, current_end, current_ins, current_offset in missing_ranges[
-            1:
-        ]:
+        for current_start, current_end, current_ins, current_offset in missing_ranges[1:]:
             last_start, last_end, last_ins, last_offset = merged[-1]
 
             # check gap between last_end and current_start
@@ -957,9 +949,7 @@ def validate_script(txt_path: Path, script_path: Path) -> ValidationResult:
         if ratio < 0.5:  # less than 50% words matched
             hallucinated_indices.append(i)
 
-    return ValidationResult(
-        missing=missing_fragments, hallucinated=hallucinated_indices
-    )
+    return ValidationResult(missing=missing_fragments, hallucinated=hallucinated_indices)
 
 
 def run_validation(
@@ -1003,9 +993,7 @@ def run_validation(
     total_missing = 0
     total_hallucinated = 0
 
-    for txt_path, script_path in tqdm(
-        chapters_to_check, desc="validating", unit="chapter"
-    ):
+    for txt_path, script_path in tqdm(chapters_to_check, desc="validating", unit="chapter"):
         result = validate_script(txt_path, script_path)
         results[txt_path.name] = result
 
@@ -1050,9 +1038,7 @@ def run_validation(
     if total_missing == 0 and total_hallucinated == 0:
         print(f"\nvalidate: all {len(results)} chapters OK")
     else:
-        print(
-            f"\nvalidate: found {', '.join(summary_parts)} across {len(results)} chapters"
-        )
+        print(f"\nvalidate: found {', '.join(summary_parts)} across {len(results)} chapters")
 
     return results
 
@@ -1062,17 +1048,13 @@ def cmd_validate(args):
 
     # default to checking both if neither flag specified
     check_missing = args.missing or (not args.missing and not args.hallucinated)
-    check_hallucinated = args.hallucinated or (
-        not args.missing and not args.hallucinated
-    )
+    check_hallucinated = args.hallucinated or (not args.missing and not args.hallucinated)
 
     run_validation(Path(args.workdir), chapters, check_missing, check_hallucinated)
 
 
 DEFAULT_CONTEXT_CHARS = 500  # default characters of context before/after missing text
-DEFAULT_CONTEXT_PARAGRAPHS = (
-    2  # default paragraphs of context before/after missing text
-)
+DEFAULT_CONTEXT_PARAGRAPHS = 2  # default paragraphs of context before/after missing text
 
 
 def _extract_context(
@@ -1158,9 +1140,7 @@ def _attempt_merge(segments: List[ScriptSegment], index: int) -> bool:
     return False
 
 
-def _remove_hallucinations(
-    segments: List[ScriptSegment], hallucinated_indices: List[int]
-) -> int:
+def _remove_hallucinations(segments: List[ScriptSegment], hallucinated_indices: List[int]) -> int:
     """remove segments identified as hallucinations."""
     removed = 0
     for idx in sorted(hallucinated_indices, reverse=True):
@@ -1182,6 +1162,7 @@ def _fill_missing_fragments(
     context_chars: int | None,
     context_paragraphs: int | None,
     verbose: bool,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> int:
     """fill missing text fragments using LLM."""
     added = 0
@@ -1190,9 +1171,7 @@ def _fill_missing_fragments(
         missing, key=lambda x: (x[1], x[2]), reverse=True
     ):
         if verbose:
-            print(
-                f"\n    missing fragment (@ {insertion_idx}+{split_offset}): {fragment}"
-            )
+            print(f"\n    missing fragment (@ {insertion_idx}+{split_offset}): {fragment}")
 
         target_idx = insertion_idx
         if split_offset > 0 and insertion_idx < len(segments):
@@ -1219,7 +1198,8 @@ def _fill_missing_fragments(
                 cast,
                 api_base,
                 api_key,
-                model or "gpt-4o",
+                model or DEFAULT_LLM_MODEL,
+                thinking_budget,
             )
             if new_segs:
                 for j, s in enumerate(new_segs):
@@ -1247,6 +1227,7 @@ def run_fix(
     context_chars: int | None = None,
     context_paragraphs: int | None = None,
     verbose: bool = False,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> None:
     """fix script issues by filling missing segments and removing hallucinated ones."""
     cast = load_cast(workdir)
@@ -1274,18 +1255,14 @@ def run_fix(
 
         segments = load_script(script_path)
         if fix_hallucinated and result.hallucinated:
-            print(
-                f"\n{txt_path.name}: removing {len(result.hallucinated)} hallucination(s)..."
-            )
+            print(f"\n{txt_path.name}: removing {len(result.hallucinated)} hallucination(s)...")
             total_removed += _remove_hallucinations(segments, result.hallucinated)
             save_script(script_path, segments)
 
         if fix_missing:
             result = validate_script(txt_path, script_path)  # re-validate
             if result.missing:
-                print(
-                    f"\n{txt_path.name}: filling {len(result.missing)} missing fragment(s)..."
-                )
+                print(f"\n{txt_path.name}: filling {len(result.missing)} missing fragment(s)...")
                 total_added += _fill_missing_fragments(
                     segments,
                     result.missing,
@@ -1297,6 +1274,7 @@ def run_fix(
                     context_chars,
                     context_paragraphs,
                     verbose,
+                    thinking_budget,
                 )
                 save_script(script_path, segments)
 
@@ -1340,6 +1318,7 @@ def cmd_fix(args):
         context_chars=context_chars,
         context_paragraphs=context_paragraphs,
         verbose=args.verbose,
+        thinking_budget=args.thinking_budget,
     )
 
 
@@ -1353,20 +1332,43 @@ def dramatize_book(
     pooled: bool = False,
     verbose: bool = False,
     force: bool = False,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> None:
     """run full dramatization pipeline."""
     run_cast_generation(
-        workdir, api_base, api_key, model, chapters, verbose=verbose, force=force
+        workdir,
+        api_base,
+        api_key,
+        model,
+        chapters,
+        verbose=verbose,
+        force=force,
+        thinking_budget=thinking_budget,
     )
     # generate scripts first before auditions
     if not run_script_generation(
-        workdir, api_base, api_key, model, chapters, verbose=verbose, force=force
+        workdir,
+        api_base,
+        api_key,
+        model,
+        chapters,
+        verbose=verbose,
+        force=force,
+        thinking_budget=thinking_budget,
     ):
         print("script generation failed. aborting.")
         return
 
     # fix script issues (missing/hallucinated)
-    run_fix(workdir, api_base, api_key, model, chapters, verbose=verbose)
+    run_fix(
+        workdir,
+        api_base,
+        api_key,
+        model,
+        chapters,
+        verbose=verbose,
+        thinking_budget=thinking_budget,
+    )
 
     # now run auditions
     run_auditions(workdir, verbose=verbose, force=force)
