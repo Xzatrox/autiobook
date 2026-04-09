@@ -9,7 +9,7 @@ import numpy as np
 import pytest
 
 from autiobook.config import SAMPLE_RATE, SHOWCASE_EMOTIONS, WAV_EXT
-from autiobook.dramatize import run_showcase
+from autiobook.showcase import run_showcase
 
 
 @pytest.fixture
@@ -82,7 +82,7 @@ class TestShowcaseCommand:
 
     def test_creates_showcase_directory_structure(self, temp_workdir, mock_engine):
         """verify showcase creates per-character directories with emotion samples."""
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             run_showcase(temp_workdir)
 
         showcase_dir = temp_workdir / "showcase"
@@ -101,7 +101,7 @@ class TestShowcaseCommand:
 
     def test_uses_voice_cloning_from_audition(self, temp_workdir, mock_engine):
         """verify showcase uses clone_voice with audition samples as reference."""
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             run_showcase(temp_workdir)
 
         # all calls should be clone operations
@@ -118,7 +118,7 @@ class TestShowcaseCommand:
 
     def test_generates_all_emotions_for_all_characters(self, temp_workdir, mock_engine):
         """verify all emotion/character combinations are generated."""
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             run_showcase(temp_workdir)
 
         # count expected samples: 2 characters x 11 emotions
@@ -132,10 +132,10 @@ class TestShowcaseCommand:
 
     def test_resumability_skips_existing_samples(self, temp_workdir, mock_engine):
         """verify showcase skips already-generated samples on second run."""
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             # first run generates all samples
             run_showcase(temp_workdir)
-            first_run_calls = len(mock_engine.call_log)
+            first_run_calls = len(mock_engine.call_log)  # noqa: F841
 
             # clear call log
             mock_engine.call_log.clear()
@@ -150,7 +150,7 @@ class TestShowcaseCommand:
 
     def test_force_flag_regenerates_all(self, temp_workdir, mock_engine):
         """verify force flag regenerates all samples."""
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             # first run
             run_showcase(temp_workdir)
             first_run_calls = len(mock_engine.call_log)
@@ -173,7 +173,7 @@ class TestShowcaseCommand:
         for f in audition_dir.glob("*.wav"):
             f.unlink()
 
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             # should not raise, but should print warning and skip
             run_showcase(temp_workdir)
 
@@ -185,7 +185,7 @@ class TestShowcaseCommand:
         # remove cast file
         (temp_workdir / "cast" / "characters.json").unlink()
 
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             # should not raise
             run_showcase(temp_workdir)
 
@@ -211,7 +211,7 @@ class TestShowcaseBatching:
 
         mock_engine.clone_voice = mock_clone_voice_track_batch
 
-        with patch("autiobook.dramatize.TTSEngine", return_value=mock_engine):
+        with patch("autiobook.showcase.TTSEngine", return_value=mock_engine):
             run_showcase(temp_workdir)
 
         # verify batching occurred (at least some calls should have multiple texts)

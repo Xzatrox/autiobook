@@ -1,12 +1,12 @@
 """tests for multi-provider LLM support and .env configuration."""
 
-import json
+import json  # noqa: F401
 import os
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
+import pytest  # noqa: F401
 
 
 class TestEnvLoading:
@@ -74,7 +74,7 @@ class TestLiteLLMIntegration:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="openai/gpt-4o",
@@ -94,7 +94,7 @@ class TestLiteLLMIntegration:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="anthropic/claude-3-5-sonnet-20240620",
@@ -113,7 +113,7 @@ class TestLiteLLMIntegration:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="gemini/gemini-1.5-pro",
@@ -132,7 +132,7 @@ class TestLiteLLMIntegration:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="openai/gpt-4o",
@@ -155,7 +155,7 @@ class TestThinkingBudget:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="anthropic/claude-3-5-sonnet-20240620",
@@ -177,7 +177,7 @@ class TestThinkingBudget:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="openai/gpt-4o",
@@ -198,7 +198,7 @@ class TestThinkingBudget:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="anthropic/claude-3-5-sonnet-20240620",
@@ -222,7 +222,7 @@ class TestApiBaseOverride:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="openai/gpt-4o",
@@ -242,7 +242,7 @@ class TestApiBaseOverride:
         with patch("litellm.completion", return_value=mock_response) as mock_completion:
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test system",
                 user_prompt="test user",
                 model="openai/gpt-4o",
@@ -276,7 +276,7 @@ class TestRetryBehavior:
             with patch("time.sleep"):  # skip actual sleep
                 from autiobook.llm import _query_llm_json
 
-                result = _query_llm_json(
+                result = _query_llm_json(  # noqa: F841
                     system_prompt="test",
                     user_prompt="test",
                     model="openai/gpt-4o",
@@ -308,7 +308,7 @@ class TestRetryBehavior:
             with patch("time.sleep"):
                 from autiobook.llm import _query_llm_json
 
-                result = _query_llm_json(
+                result = _query_llm_json(  # noqa: F841
                     system_prompt="test",
                     user_prompt="test",
                     model="openai/gpt-4o",
@@ -330,7 +330,7 @@ class TestJsonResponseParsing:
         with patch("litellm.completion", return_value=mock_response):
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test",
                 user_prompt="test",
                 model="openai/gpt-4o",
@@ -347,7 +347,7 @@ class TestJsonResponseParsing:
         with patch("litellm.completion", return_value=mock_response):
             from autiobook.llm import _query_llm_json
 
-            result = _query_llm_json(
+            result = _query_llm_json(  # noqa: F841
                 system_prompt="test",
                 user_prompt="test",
                 model="openai/gpt-4o",

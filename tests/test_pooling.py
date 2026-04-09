@@ -154,7 +154,7 @@ class TestChapterOrderedScheduling:
 
         # extract assembly events
         assemblies = [e for e in tracking_engine.event_log if e[0] == "assemble"]
-        synth_events = [e for e in tracking_engine.event_log if e[0] == "synthesize"]
+        synth_events = [e for e in tracking_engine.event_log if e[0] == "synthesize"]  # noqa: F841
 
         # chapters should be assembled in order
         assert [a[1] for a in assemblies] == [
