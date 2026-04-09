@@ -97,11 +97,14 @@ def _synthesize_batch(
                 pbar.update(1)
 
     except RuntimeError as e:
-        if "out of memory" in str(e):
+        if "out of memory" in str(e).lower():
             print("warning: OOM detected, clearing cache and retrying...")
             import torch
 
-            torch.cuda.empty_cache()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
             try:
                 if ref_audio:
                     wavs, _ = engine.clone_voice(texts, ref_audio, ref_text)

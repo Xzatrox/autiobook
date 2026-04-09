@@ -1,6 +1,6 @@
 # autiobook
 
-convert epub files to audiobooks using qwen3-tts.
+convert epub and fb2 files to audiobooks using qwen3-tts.
 
 ## requirements
 
@@ -8,13 +8,16 @@ convert epub files to audiobooks using qwen3-tts.
 - ffmpeg
 - sox
 - uv (python package manager)
-- gpu recommended (cuda or rocm)
+- gpu recommended (cuda, rocm, or apple mps)
 
 ## installation
 
 ```bash
 # cuda gpu (default)
 make build-cuda
+
+# apple silicon (mps)
+make build-mps
 
 # amd rocm gpu (gfx1151)
 make build-rocm
@@ -37,22 +40,25 @@ autiobook --help
 
 ```bash
 autiobook chapters book.epub
+autiobook chapters book.fb2
 ```
 
 ### full conversion (idempotent)
 
 ```bash
 autiobook convert book.epub -o workdir/
+autiobook convert book.fb2 -o workdir/
 ```
 
 runs all phases, skipping already-completed steps.
 
 ### extract
 
-extract chapter text from epub to workdir.
+extract chapter text from book file (epub or fb2) to workdir.
 
 ```
 autiobook extract book.epub -o workdir/
+autiobook extract book.fb2 -o workdir/
 ```
 
 creates:

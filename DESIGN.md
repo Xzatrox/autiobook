@@ -4,7 +4,7 @@
 
 Standard Workflow:
 ```
-epub file → extract → txt files → synthesize → wav files → export → mp3 files
+book file (epub/fb2) → extract → txt files → synthesize → wav files → export → mp3 files
 ```
 
 Dramatization Workflow:
@@ -20,18 +20,20 @@ each phase is idempotent and can be run independently.
 
 ### chapters
 
-list chapters in an epub file.
+list chapters in a book file (epub or fb2).
 
 ```
 autiobook chapters book.epub
+autiobook chapters book.fb2
 ```
 
 ### extract
 
-extract chapter text from epub to workdir.
+extract chapter text from book file to workdir.
 
 ```
 autiobook extract book.epub -o workdir/
+autiobook extract book.fb2 -o workdir/
 ```
 
 creates:
@@ -130,6 +132,21 @@ key types:
 - `Chapter(index, title, text)` - single chapter data
 - `Book(title, author, chapters)` - parsed book data
 
+### fb2.py
+
+parses fb2 (FictionBook 2) files using xml.etree.ElementTree, extracts chapter text from sections.
+
+supports:
+- plain fb2 files (.fb2)
+- zipped fb2 files (.fb2.zip)
+- embedded cover images (base64 encoded)
+- poems and stanzas
+- epigraphs
+
+key types:
+- `Chapter(index, title, text)` - single chapter data
+- `Book(title, author, chapters)` - parsed book data
+
 ### tts.py
 
 wraps qwen3-tts for text-to-speech conversion.
@@ -139,6 +156,11 @@ wraps qwen3-tts for text-to-speech conversion.
 - supports configurable voice and style
 - **Voice Design**: generates new voices from text descriptions
 - **Voice Cloning**: clones voices from reference audio
+- **Device support**: auto-detects cuda, rocm, mps (apple silicon), or cpu
+  - cuda: bfloat16 + flash_attention_2
+  - rocm: bfloat16 + sdpa
+  - mps: bfloat16 + sdpa
+  - cpu: float32 + sdpa
 
 ### dramatize.py
 
@@ -185,6 +207,7 @@ cli entry point with subcommands.
 | pydub | audio manipulation |
 | torch | model inference |
 | soundfile | wav i/o |
+| lxml | xml parsing for fb2 |
 
 ## constants
 

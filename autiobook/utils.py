@@ -13,6 +13,47 @@ from .config import (
 )
 
 
+def detect_book_format(path: Path) -> str:
+    """detect book format from file extension."""
+    suffix = path.suffix.lower()
+    name_lower = path.name.lower()
+
+    if suffix == ".epub":
+        return "epub"
+    elif suffix == ".fb2" or name_lower.endswith(".fb2.zip"):
+        return "fb2"
+    else:
+        raise ValueError(f"Unsupported book format: {path.suffix}")
+
+
+def parse_book(path: Path):
+    """parse a book file (epub or fb2) and return (book, cover_data)."""
+    book_format = detect_book_format(path)
+
+    if book_format == "epub":
+        from .epub import parse_epub
+        return parse_epub(path)
+    elif book_format == "fb2":
+        from .fb2 import parse_fb2
+        return parse_fb2(path)
+    else:
+        raise ValueError(f"Unsupported book format: {book_format}")
+
+
+def ensure_book_extracted(path: Path, workdir: Path, force: bool = False) -> None:
+    """extract book (epub or fb2) to workdir."""
+    book_format = detect_book_format(path)
+
+    if book_format == "epub":
+        from .epub import ensure_extracted as ensure_extracted_epub
+        ensure_extracted_epub(path, workdir, force)
+    elif book_format == "fb2":
+        from .fb2 import ensure_extracted as ensure_extracted_fb2
+        ensure_extracted_fb2(path, workdir, force)
+    else:
+        raise ValueError(f"Unsupported book format: {book_format}")
+
+
 def parse_chapter_range(spec: str) -> list[int]:
     """parse chapter range spec like '1-5' or '1,3,5' into list of ints."""
     chapters: list[int] = []
@@ -98,11 +139,11 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
         )
 
     if group in ["all", "paths"]:
-        g.add_argument("epub", help="path to epub file")
+        g.add_argument("book", help="path to book file (epub or fb2)")
         g.add_argument(
             "-o",
             "--output",
-            help="workdir for intermediate files (default: <epub>_output/)",
+            help="workdir for intermediate files (default: <book>_output/)",
         )
 
     if group in ["all", "export"]:
@@ -113,15 +154,15 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
 
 
 def get_pipeline_paths(args) -> tuple[Path, Path]:
-    """get epub_path and workdir from args, inferring if needed."""
-    epub_path = Path(args.epub)
+    """get book_path and workdir from args, inferring if needed."""
+    book_path = Path(args.book)
     if args.output:
         workdir = Path(args.output)
     else:
         # infer workdir: /path/to/book.epub -> /path/to/book_output/
-        workdir = epub_path.parent / (epub_path.stem + "_output")
+        workdir = book_path.parent / (book_path.stem + "_output")
 
-    return epub_path, workdir
+    return book_path, workdir
 
 
 def get_chapters(args) -> list[int] | None:

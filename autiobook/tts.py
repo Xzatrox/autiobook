@@ -39,7 +39,7 @@ WARMUP_TEXT = "Hello, this is a warmup."
 
 
 def get_default_device() -> str:
-    """get default device (cuda/rocm if available, else cpu)."""
+    """get default device (cuda/rocm if available, then mps, else cpu)."""
     has_cuda = torch.cuda.is_available()
     has_rocm = hasattr(torch.version, "hip") and torch.version.hip is not None
 
@@ -57,6 +57,21 @@ def get_default_device() -> str:
 
     print(f"autodetected device type: {device_type}")
     return device_type
+
+
+def is_mps(device: str = "") -> bool:
+    """check if running on apple mps."""
+    return device == "mps" or (
+        not device and hasattr(torch.backends, "mps") and torch.backends.mps.is_available()
+    )
+
+
+def empty_device_cache(device: str) -> None:
+    """clear device memory cache."""
+    if "cuda" in device:
+        torch.cuda.empty_cache()
+    elif device == "mps":
+        torch.mps.empty_cache()
 
 
 def is_rocm() -> bool:
@@ -114,14 +129,20 @@ class TTSEngine:
         if self._model:
             print(f"unloading model {self._loaded_model_name}...")
             del self._model
-            torch.cuda.empty_cache()
+            empty_device_cache(self.config.device)
 
         from qwen_tts import Qwen3TTSModel  # type: ignore
 
         # determine dtype and attention implementation
         is_cuda = "cuda" in self.config.device
-        dtype = torch.bfloat16 if is_cuda else torch.float32
-        attn_impl = "sdpa" if is_rocm() or not is_cuda else "flash_attention_2"
+        is_apple_mps = self.config.device == "mps"
+        use_bf16 = is_cuda or is_apple_mps
+        dtype = torch.bfloat16 if use_bf16 else torch.float32
+        if is_cuda and not is_rocm():
+            attn_impl = "flash_attention_2"
+        else:
+            # sdpa works on rocm, mps, and cpu
+            attn_impl = "sdpa"
 
         print(f"loading {self.config.model_name} on {self.config.device} ({dtype}, {attn_impl})...")
         self._model = Qwen3TTSModel.from_pretrained(
@@ -132,7 +153,7 @@ class TTSEngine:
         )
         self._loaded_model_name = self.config.model_name
 
-        if self.config.compile_model and is_cuda:
+        if self.config.compile_model and (is_cuda or is_apple_mps):
             self._compile_model()
         if self.config.warmup:
             self._warmup()

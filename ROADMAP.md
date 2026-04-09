@@ -1,5 +1,7 @@
 # ROADMAP
 
+[x] fb2 books format support
+[x] apple silicon mps gpu support
 [@] change default audiobook output folder from 'audiobook/' to 'export/'
 [@] multi-provider LLM support with litellm and .env configuration
 [ ] audition command: add --audition-line flag to override per-character audition lines

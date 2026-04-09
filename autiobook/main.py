@@ -25,11 +25,17 @@ from .dramatize import (
     cmd_validate,
     dramatize_book,
 )
-from .epub import ensure_extracted, parse_epub
 from .export import export_audiobook
 from .showcase import cmd_showcase
 from .tts import synthesize_chapters
-from .utils import add_common_args, get_chapters, get_pipeline_paths, get_tts_config
+from .utils import (
+    add_common_args,
+    ensure_book_extracted,
+    get_chapters,
+    get_pipeline_paths,
+    get_tts_config,
+    parse_book,
+)
 
 
 def cmd_download(args):
@@ -49,9 +55,9 @@ def cmd_download(args):
 
 
 def cmd_chapters(args):
-    """list chapters in an epub file."""
-    epub_path = Path(args.epub)
-    book, cover_data = parse_epub(epub_path)
+    """list chapters in a book file (epub or fb2)."""
+    book_path = Path(args.book)
+    book, cover_data = parse_book(book_path)
 
     print(f"chapters: title: {book.title}")
     print(f"chapters: author: {book.author}")
@@ -65,20 +71,20 @@ def cmd_chapters(args):
 
 
 def cmd_extract(args):
-    """extract chapter text from epub to workdir."""
-    epub_path = Path(args.epub)
+    """extract chapter text from book file to workdir."""
+    book_path = Path(args.book)
     workdir = Path(args.output)
-    ensure_extracted(epub_path, workdir, force=args.force)
+    ensure_book_extracted(book_path, workdir, force=args.force)
     print("extract: done")
 
 
 def _run_pipeline(args, process_fn, name):
     """common helper for full pipelines."""
-    epub_path, workdir = get_pipeline_paths(args)
+    book_path, workdir = get_pipeline_paths(args)
     export_dir = workdir / "export"
     chapters = get_chapters(args)
 
-    ensure_extracted(epub_path, workdir, force=args.force)
+    ensure_book_extracted(book_path, workdir, force=args.force)
 
     config = get_tts_config(args)
     process_fn(workdir, config, chapters)
@@ -182,7 +188,7 @@ def cmd_clean(args):
 def main():
     parser = argparse.ArgumentParser(
         prog="autiobook",
-        description="convert epub files to audiobooks using qwen3-tts",
+        description="convert epub and fb2 files to audiobooks using qwen3-tts",
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -201,16 +207,16 @@ def main():
         ),
         "chapters": (
             cmd_chapters,
-            "list chapters in an epub file",
+            "list chapters in a book file (epub or fb2)",
             [("runtime",)],
-            [(("epub",), {"help": "path to epub file"})],
+            [(("book",), {"help": "path to book file (epub or fb2)"})],
         ),
         "extract": (
             cmd_extract,
-            "extract chapter text from epub",
+            "extract chapter text from book file",
             [("runtime",)],
             [
-                (("epub",), {"help": "path to epub file"}),
+                (("book",), {"help": "path to book file (epub or fb2)"}),
                 (("-o", "--output"), {"required": True, "help": "output workdir"}),
             ],
         ),

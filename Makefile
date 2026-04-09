@@ -1,4 +1,4 @@
-.PHONY: all venv build build-cpu build-cuda build-rocm test lint format precommit clean
+.PHONY: all venv build build-cpu build-mps build-cuda build-rocm test lint format precommit clean
 
 RUN := uv run --no-sync
 
@@ -10,6 +10,9 @@ venv:
 build: build-cuda
 
 build-cpu: venv
+	uv sync --extra cpu
+
+build-mps: venv
 	uv sync --extra cpu
 
 build-cuda: venv
