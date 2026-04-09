@@ -148,7 +148,6 @@ def extract_cover_image(root: ET.Element, fb2_path: Path) -> bytes | None:
     # find binary data
     for binary in root.findall(_ns("binary")):
         if binary.get("id") == image_id:
-            content_type = binary.get("content-type", "")
             data = binary.text
             if data:
                 import base64
