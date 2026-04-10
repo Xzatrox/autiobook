@@ -22,7 +22,9 @@ from .dramatize import (
     cmd_audition,
     cmd_cast,
     cmd_fix,
+    cmd_normalize,
     cmd_perform,
+    cmd_scan,
     cmd_script,
     cmd_validate,
     dramatize_book,
@@ -106,6 +108,17 @@ def cmd_dramatize(args):
     """generate script and cast using LLM."""
 
     def process_fn(workdir, config, chapters):
+        from .llm_server import LlamaServerConfig
+
+        llm_server_config = None
+        if args.llm_server_model:
+            llm_server_config = LlamaServerConfig(
+                model=args.llm_server_model,
+                draft_model=args.llm_server_draft_model,
+                port=args.llm_server_port,
+                ctx_size=args.llm_server_ctx_size,
+            )
+
         print(f"dramatize: dramatizing chapters in {workdir}...")
         dramatize_book(
             workdir,
@@ -118,6 +131,7 @@ def cmd_dramatize(args):
             verbose=args.verbose,
             force=args.force,
             thinking_budget=args.thinking_budget,
+            llm_server_config=llm_server_config,
         )
 
     _run_pipeline(args, process_fn, "dramatize")
@@ -232,9 +246,16 @@ def main():
                 ("tts_engine",),
                 ("cast",),
                 ("export",),
+                ("llm_server",),
                 ("runtime",),
             ],
             [],
+        ),
+        "scan": (
+            cmd_scan,
+            "scan book for characters (pre-cast analysis)",
+            [("scripting",), ("chapter_selection",), ("runtime",)],
+            [(("workdir",), {"help": "path to workdir"})],
         ),
         "cast": (
             cmd_cast,
@@ -288,6 +309,12 @@ def main():
             cmd_perform,
             "synthesize audio from dramatized scripts",
             [("chapter_selection",), ("tts_engine",), ("cast",), ("runtime",)],
+            [(("workdir",), {"help": "path to workdir"})],
+        ),
+        "normalize": (
+            cmd_normalize,
+            "fix inconsistent speaker names in scripts",
+            [("chapter_selection",), ("runtime",)],
             [(("workdir",), {"help": "path to workdir"})],
         ),
         "validate": (

@@ -129,6 +129,28 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
             help="tokens for extended thinking (0 = disabled)",
         )
 
+    if group in ["all", "llm_server"]:
+        g.add_argument(
+            "--llm-server-model",
+            help="path to GGUF model to auto-start llama-server",
+        )
+        g.add_argument(
+            "--llm-server-draft-model",
+            help="path to draft GGUF model for speculative decoding",
+        )
+        g.add_argument(
+            "--llm-server-port",
+            type=int,
+            default=8080,
+            help="port for llama-server (default: 8080)",
+        )
+        g.add_argument(
+            "--llm-server-ctx-size",
+            type=int,
+            default=16384,
+            help="context size for llama-server (default: 16384)",
+        )
+
     if group in ["all", "runtime"]:
         g.add_argument("-v", "--verbose", action="store_true", help="enable verbose logging")
         g.add_argument(

@@ -5,7 +5,10 @@ import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Optional, cast
+from typing import TYPE_CHECKING, List, Optional, cast
+
+if TYPE_CHECKING:
+    from .llm_server import LlamaServerConfig
 
 import soundfile as sf  # type: ignore
 from tqdm import tqdm  # type: ignore
@@ -19,6 +22,7 @@ from .config import (
     DEFAULT_CAST,
     DEFAULT_LLM_MODEL,
     DEFAULT_THINKING_BUDGET,
+    SCAN_FILE,
     SCRIPT_EXT,
     TXT_EXT,
     VOICE_DESIGN_MODEL,
@@ -30,7 +34,10 @@ from .llm import (
     ScriptSegment,
     fix_missing_segment,
     generate_cast,
+    generate_cast_from_scan,
+    merge_scanned_characters,
     process_script_chunk,
+    scan_chapter_characters,
     split_text_smart,
 )
 from .pooling import AudioTask, process_audio_pipeline
@@ -43,18 +50,49 @@ from .tts import (
 from .utils import get_chapters, get_tts_config
 
 
-def save_cast(workdir: Path, cast: List[Character]) -> None:
-    """save cast to json file."""
+def _deduplicate_cast(cast_list: List[Character]) -> List[Character]:
+    """merge cast entries that reference each other as aliases."""
+    # build name -> character index
+    by_name: dict[str, int] = {}
+    for i, c in enumerate(cast_list):
+        by_name[c.name.lower()] = i
+
+    merged_into: dict[int, int] = {}  # index -> canonical index
+
+    for i, c in enumerate(cast_list):
+        if i in merged_into:
+            continue
+        if not c.aliases:
+            continue
+        for alias in c.aliases:
+            j = by_name.get(alias.lower())
+            if j is not None and j != i and j not in merged_into:
+                # merge j into i
+                other = cast_list[j]
+                all_aliases = set(c.aliases or [])
+                all_aliases.update(other.aliases or [])
+                all_aliases.add(other.name)
+                all_aliases.discard(c.name)
+                c.aliases = sorted(all_aliases)
+                merged_into[j] = i
+
+    return [c for i, c in enumerate(cast_list) if i not in merged_into]
+
+
+def save_cast(workdir: Path, cast_list: List[Character]) -> None:
+    """save cast to json file (deduplicates before saving)."""
 
     path = get_command_dir(workdir, "cast") / CAST_FILE
+    cast_list = _deduplicate_cast(cast_list)
 
     characters = []
-    for c in cast:
+    for c in cast_list:
         char_data = {
             "name": c.name,
             "description": c.description,
             "audition_line": c.audition_line,
             "aliases": c.aliases,
+            "gender": c.gender,
         }
         characters.append(char_data)
 
@@ -94,6 +132,7 @@ def load_cast(workdir: Path) -> List[Character]:
                     description=c["description"],
                     audition_line=c["audition_line"],
                     aliases=c.get("aliases"),
+                    gender=c.get("gender"),
                 )
             )
         return chars_legacy
@@ -107,6 +146,7 @@ def load_cast(workdir: Path) -> List[Character]:
                 description=c["description"],
                 audition_line=c["audition_line"],
                 aliases=c.get("aliases"),
+                gender=c.get("gender"),
             )
         )
     return chars_dict
@@ -149,11 +189,11 @@ def _find_existing_character(
     """find an existing character that matches the given one."""
     key = c.name.lower()
 
-    # 1. name is an alias
+    # 1. name is an alias of existing character
     if key in alias_map:
         return cast_map[alias_map[key]], c.name
 
-    # 2. any of character's aliases match existing
+    # 2. any of new character's aliases match existing name or alias
     if c.aliases:
         for alias in c.aliases:
             a_low = alias.lower()
@@ -162,8 +202,31 @@ def _find_existing_character(
             if a_low in alias_map:
                 return cast_map[alias_map[a_low]], c.name
 
-    # 3. exact match
-    return cast_map.get(key), None
+    # 3. exact name match
+    if key in cast_map:
+        return cast_map[key], None
+
+    # 4. cross-match: check if any existing character's aliases match new name
+    for existing in cast_map.values():
+        if existing.aliases:
+            for alias in existing.aliases:
+                if alias.lower() == key:
+                    return existing, c.name
+
+    # 5. fuzzy match name against all existing names and aliases
+    all_keys = list(cast_map.keys()) + list(alias_map.keys())
+    best_key, best_ratio = None, 0.0
+    for candidate in all_keys:
+        ratio = difflib.SequenceMatcher(None, key, candidate).ratio()
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_key = candidate
+    if best_ratio >= 0.75 and best_key:
+        resolved = alias_map.get(best_key, best_key)
+        if resolved in cast_map:
+            return cast_map[resolved], c.name
+
+    return None, None
 
 
 def _merge_character_into_cast(
@@ -192,6 +255,14 @@ def _merge_character_into_cast(
         if c.description and c.description != existing.description:
             existing.description = c.description
             updates.append("description")
+
+        if c.audition_line and c.audition_line != existing.audition_line:
+            existing.audition_line = c.audition_line
+            updates.append("audition_line")
+
+        if c.gender and not existing.gender:
+            existing.gender = c.gender
+            updates.append("gender")
 
         if verbose and updates:
             msg = f"  {'merged' if merge_source else 'updated'} '{existing.name}'"
@@ -281,7 +352,7 @@ def _process_cast_batch(
     return len(batch_cast)
 
 
-def run_cast_generation(
+def run_scan(
     workdir: Path,
     api_base: str | None = None,
     api_key: str | None = None,
@@ -290,16 +361,17 @@ def run_cast_generation(
     verbose: bool = False,
     force: bool = False,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
-) -> List[Character]:
-    """analyze book and generate cast list."""
-    existing_cast = load_cast(workdir)
-    resume = ResumeManager.for_command(workdir, "cast", force=force)
+) -> list[dict]:
+    """scan all chapters to build a complete character list."""
+    scan_dir = get_command_dir(workdir, "scan")
+    scan_path = scan_dir / SCAN_FILE
+    resume = ResumeManager.for_command(workdir, "scan", force=force)
 
     extract_dir = get_command_dir(workdir, "extract")
     txt_files = sorted(extract_dir.glob(f"*{TXT_EXT}"))
     if not txt_files:
         print("no extracted text files found!")
-        return existing_cast
+        return []
 
     chapter_map = {}
     for txt_path in txt_files:
@@ -312,47 +384,137 @@ def run_cast_generation(
     chapters_to_process, chapter_hashes = _get_chapters_to_analyze(
         chapter_map, chapters, resume, force
     )
+
+    # load existing scan results for chapters already done
+    all_scans: list[list[dict]] = []
+    if scan_path.exists() and not force:
+        with open(scan_path, encoding="utf-8") as f:
+            existing = json.load(f)
+        all_scans = existing.get("per_chapter", [])
+
     if not chapters_to_process:
-        print(f"cast: all {len(chapters or chapter_map)} chapters up to date.")
-        return existing_cast
+        print(f"scan: all {len(chapters or chapter_map)} chapters up to date.")
+        merged = existing.get("merged", []) if scan_path.exists() else []
+        return merged
 
-    print(f"cast: analyzing {len(chapters_to_process)} chapters...")
+    print(f"scan: scanning {len(chapters_to_process)} chapters...")
 
-    cast_map = {c.name.lower(): c for c in existing_cast}
-    alias_map = {a.lower(): c.name.lower() for c in existing_cast if c.aliases for a in c.aliases}
+    # scan each chapter
+    for num in tqdm(chapters_to_process, desc="scanning chapters", unit="ch"):
+        txt_path = chapter_map[num]
+        text = txt_path.read_text(encoding="utf-8")
 
-    batch_size = 3
-    for batch_start in range(0, len(chapters_to_process), batch_size):
-        batch_chapters = chapters_to_process[batch_start : batch_start + batch_size]
-        print(
-            f"  batch {batch_start // batch_size + 1}: chapters {batch_chapters} "
-            f"({len(cast_map)} characters known)..."
+        chars = scan_chapter_characters(
+            text, api_base, api_key, model or DEFAULT_LLM_MODEL, thinking_budget
         )
 
-        _process_cast_batch(
-            batch_chapters,
-            chapter_map,
-            cast_map,
-            alias_map,
-            api_base,
-            api_key,
-            model,
-            verbose,
-            thinking_budget,
-        )
+        if verbose:
+            names = [f"{c['name']}({c['count']})" for c in chars]
+            tqdm.write(f"  ch {num}: {', '.join(names)}")
 
-        for num in batch_chapters:
-            resume.update(str(num), chapter_hashes[num])
+        # store by chapter index
+        while len(all_scans) < num:
+            all_scans.append([])
+        if num <= len(all_scans):
+            all_scans[num - 1] = chars
+        else:
+            all_scans.append(chars)
+
+        resume.update(str(num), chapter_hashes[num])
         resume.save()
 
-        final_cast = list(cast_map.values())
-        narrator = next((c for c in final_cast if c.name.lower() == "narrator"), None)
-        if narrator:
-            final_cast.remove(narrator)
-            final_cast.insert(0, narrator)
-        save_cast(workdir, final_cast)
+    # merge across chapters: LLM semantic merge + programmatic dedup
+    print("scan: merging characters across chapters...")
+    merged = merge_scanned_characters(
+        all_scans, api_base, api_key, model or DEFAULT_LLM_MODEL, thinking_budget
+    )
 
-    return list(cast_map.values())
+    if verbose:
+        for c in merged:
+            aliases = f" (aka {', '.join(c['aliases'])})" if c['aliases'] else ""
+            print(f"  {c['name']}: {c['count']} lines, {c['gender']}{aliases}")
+
+    # save
+    with open(scan_path, "w", encoding="utf-8") as f:
+        json.dump({"per_chapter": all_scans, "merged": merged}, f, indent=2, ensure_ascii=False)
+
+    print(f"scan: found {len(merged)} characters")
+    return merged
+
+
+def load_scan(workdir: Path) -> list[dict]:
+    """load merged scan results."""
+    scan_path = get_command_dir(workdir, "scan") / SCAN_FILE
+    if not scan_path.exists():
+        return []
+    with open(scan_path, encoding="utf-8") as f:
+        data = json.load(f)
+    return data.get("merged", [])
+
+
+def run_cast_generation(
+    workdir: Path,
+    api_base: str | None = None,
+    api_key: str | None = None,
+    model: str | None = None,
+    chapters: list[int] | None = None,
+    verbose: bool = False,
+    force: bool = False,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
+) -> List[Character]:
+    """generate voice descriptions from pre-scanned character list."""
+    scanned = load_scan(workdir)
+    if not scanned:
+        print("cast: no scan data found. run 'scan' command first.")
+        return load_cast(workdir)
+
+    # check if cast is already up to date
+    scan_hash = compute_hash(scanned)
+    resume = ResumeManager.for_command(workdir, "cast", force=force)
+    if not force and resume.is_fresh("cast", scan_hash):
+        print("cast: up to date.")
+        return load_cast(workdir)
+
+    print(f"cast: generating voices for {len(scanned)} characters...")
+
+    # gather text sample for audition line generation
+    extract_dir = get_command_dir(workdir, "extract")
+    txt_files = sorted(extract_dir.glob(f"*{TXT_EXT}"))
+    text_sample = ""
+    for txt_path in txt_files[:3]:
+        text_sample += txt_path.read_text(encoding="utf-8")[:3000] + "\n"
+
+    cast_list = generate_cast_from_scan(
+        scanned, text_sample, api_base, api_key,
+        model or DEFAULT_LLM_MODEL, thinking_budget,
+    )
+
+    if verbose:
+        for c in cast_list:
+            print(f"  {c.name}: {c.description[:50]}...")
+
+    # ensure Narrator is first
+    narrator = next((c for c in cast_list if c.name.lower() in ("narrator", "нарратор")), None)
+    if narrator:
+        cast_list.remove(narrator)
+        cast_list.insert(0, narrator)
+
+    # add default Extra voices if not present
+    names_lower = {c.name.lower() for c in cast_list}
+    for default in DEFAULT_CAST:
+        if default["name"].lower() not in names_lower:
+            cast_list.append(Character(
+                name=default["name"],
+                description=default["description"],
+                audition_line=default["audition_line"],
+                gender="f" if "female" in default["name"].lower() else "m",
+            ))
+
+    save_cast(workdir, cast_list)
+    resume.update("cast", scan_hash)
+    resume.save()
+
+    return cast_list
 
 
 def run_auditions(
@@ -647,6 +809,25 @@ def run_performance(
     _perform_pooled(engine, pending, voices_dir, cast_map, resume=resume, force=force)
 
 
+def _infer_gender(c: Character) -> str | None:
+    """infer gender from character description or explicit field."""
+    if c.gender and c.gender in ("m", "f"):
+        return c.gender
+    d = c.description.lower()
+    if any(w in d for w in ("female", "woman", "girl", "женск", "девуш", "девочк")):
+        return "f"
+    if any(w in d for w in ("male", "man", "boy", "мужск", "мужчин", "парен")):
+        return "m"
+    return None
+
+
+def _pick_gender_fallback(speaker: str, instruction: str, gender_map: dict[str, str]) -> str:
+    """pick fallback voice for an unknown speaker."""
+    if instruction == "narrative":
+        return "Narrator"
+    return "Extra Male"
+
+
 def _perform_pooled(
     engine: TTSEngine,
     pending: list[tuple[Path, Path]],
@@ -670,6 +851,20 @@ def _perform_pooled(
 
     chapter_data = []
     segments_dir = get_segments_dir(pending[0][1].parent)
+    warned_speakers: set[str] = set()
+
+    # build lowercase speaker map for fuzzy fallback
+    from .llm import _build_speaker_map, _normalize_speaker
+
+    cast_chars = list({c.name: c for c in cast_map.values()}.values())
+    speaker_map = _build_speaker_map(cast_chars)
+
+    # build gender map for fallback
+    gender_map: dict[str, str] = {}  # canonical name -> 'm' or 'f'
+    for c in cast_chars:
+        g = _infer_gender(c)
+        if g:
+            gender_map[c.name] = g
 
     for txt_path, wav_path in pending:
         segments = load_script(txt_path)
@@ -678,7 +873,22 @@ def _perform_pooled(
 
         chapter_tasks = []
         for segment in segments:
-            char_opt = cast_map.get(segment.speaker) or cast_map.get("Narrator")
+            char_opt = cast_map.get(segment.speaker)
+            if char_opt is None:
+                # fuzzy resolve before giving up
+                resolved = _normalize_speaker(segment.speaker, speaker_map)
+                char_opt = cast_map.get(resolved)
+            if char_opt is None:
+                if segment.speaker not in warned_speakers:
+                    fallback = _pick_gender_fallback(segment.speaker, segment.instruction, gender_map)
+                    print(
+                        f"  warning: speaker '{segment.speaker}' not in cast, "
+                        f"falling back to {fallback}"
+                    )
+                    warned_speakers.add(segment.speaker)
+                else:
+                    fallback = _pick_gender_fallback(segment.speaker, segment.instruction, gender_map)
+                char_opt = cast_map.get(fallback) or cast_map.get("Narrator")
             char_name = char_opt.name if char_opt else ""
             char_hash = char_hashes.get(char_name, "")
 
@@ -723,6 +933,20 @@ def _perform_pooled(
 
 
 # CLI Command Wrappers
+
+
+def cmd_scan(args):
+    chapters = get_chapters(args)
+    run_scan(
+        Path(args.workdir),
+        api_base=args.api_base,
+        api_key=args.api_key,
+        model=args.model,
+        chapters=chapters,
+        verbose=args.verbose,
+        force=args.force,
+        thinking_budget=args.thinking_budget,
+    )
 
 
 def cmd_cast(args):
@@ -1322,6 +1546,66 @@ def cmd_fix(args):
     )
 
 
+def normalize_scripts(
+    workdir: Path,
+    chapters: list[int] | None = None,
+    verbose: bool = False,
+) -> None:
+    """re-resolve all speaker names in scripts against the cast.
+
+    Fixes inconsistent speaker names (transliteration variants, missing aliases)
+    by running fuzzy matching against the full cast list.
+    """
+    from .llm import _build_speaker_map, _normalize_speaker
+
+    cast_list = load_cast(workdir)
+    if not cast_list:
+        return
+
+    speaker_map = _build_speaker_map(cast_list)
+    script_dir = get_command_dir(workdir, "script")
+    script_files = sorted(script_dir.glob(f"*{SCRIPT_EXT}"))
+
+    total_fixed = 0
+    for script_path in script_files:
+        if script_path.name == "state.json":
+            continue
+        if chapters:
+            try:
+                num = int(script_path.stem.split("_")[0])
+                if num not in chapters:
+                    continue
+            except ValueError:
+                continue
+
+        segments = load_script(script_path)
+        if not segments:
+            continue
+
+        changed = False
+        for seg in segments:
+            resolved = _normalize_speaker(seg.speaker, speaker_map)
+            if resolved != seg.speaker:
+                if verbose:
+                    print(f"  {script_path.name}: '{seg.speaker}' -> '{resolved}'")
+                seg.speaker = resolved
+                changed = True
+                total_fixed += 1
+
+        if changed:
+            save_script(script_path, segments)
+
+    if total_fixed > 0:
+        print(f"normalize: fixed {total_fixed} speaker name(s) across scripts")
+    elif verbose:
+        print("normalize: all speaker names consistent")
+
+
+def cmd_normalize(args):
+    chapters = get_chapters(args)
+    normalize_scripts(Path(args.workdir), chapters, verbose=args.verbose)
+
+
 def dramatize_book(
     workdir: Path,
     api_base: str | None = None,
@@ -1333,44 +1617,73 @@ def dramatize_book(
     verbose: bool = False,
     force: bool = False,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
+    llm_server_config: Optional["LlamaServerConfig"] = None,
 ) -> None:
     """run full dramatization pipeline."""
-    run_cast_generation(
-        workdir,
-        api_base,
-        api_key,
-        model,
-        chapters,
-        verbose=verbose,
-        force=force,
-        thinking_budget=thinking_budget,
-    )
-    # generate scripts first before auditions
-    if not run_script_generation(
-        workdir,
-        api_base,
-        api_key,
-        model,
-        chapters,
-        verbose=verbose,
-        force=force,
-        thinking_budget=thinking_budget,
-    ):
-        print("script generation failed. aborting.")
-        return
+    from .llm_server import LlamaServer, LlamaServerConfig  # noqa: F811
 
-    # fix script issues (missing/hallucinated)
-    run_fix(
-        workdir,
-        api_base,
-        api_key,
-        model,
-        chapters,
-        verbose=verbose,
-        thinking_budget=thinking_budget,
-    )
+    server: LlamaServer | None = None
+    if llm_server_config is not None:
+        server = LlamaServer(llm_server_config)
+        server.start()
+        api_base = server.api_base
+        if not api_key:
+            api_key = "local"
 
-    # now run auditions
+    try:
+        run_scan(
+            workdir,
+            api_base,
+            api_key,
+            model,
+            chapters,
+            verbose=verbose,
+            force=force,
+            thinking_budget=thinking_budget,
+        )
+        run_cast_generation(
+            workdir,
+            api_base,
+            api_key,
+            model,
+            chapters,
+            verbose=verbose,
+            force=force,
+            thinking_budget=thinking_budget,
+        )
+        # generate scripts first before auditions
+        if not run_script_generation(
+            workdir,
+            api_base,
+            api_key,
+            model,
+            chapters,
+            verbose=verbose,
+            force=force,
+            thinking_budget=thinking_budget,
+        ):
+            print("script generation failed. aborting.")
+            return
+
+        # fix script issues (missing/hallucinated)
+        run_fix(
+            workdir,
+            api_base,
+            api_key,
+            model,
+            chapters,
+            verbose=verbose,
+            thinking_budget=thinking_budget,
+        )
+    finally:
+        # stop LLM server before TTS steps to free GPU memory
+        if server is not None:
+            server.stop()
+
+    # normalize speaker names in scripts before TTS
+    normalize_scripts(workdir, chapters, verbose=verbose)
+
+    # now run auditions and performance (TTS-only, no LLM needed)
     run_auditions(workdir, verbose=verbose, force=force)
     run_performance(
         workdir,

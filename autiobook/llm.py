@@ -1,5 +1,6 @@
 """llm integration for script and cast generation."""
 
+import difflib
 import json
 import re
 import time
@@ -53,6 +54,7 @@ class Character:
     description: str  # visual/vocal description for VoiceDesign
     audition_line: str  # short text to generate the reference voice
     aliases: list[str] | None = None  # alternate names for the same character
+    gender: str | None = None  # 'm' or 'f', used for fallback voice mapping
 
 
 @dataclass
@@ -104,6 +106,10 @@ def _query_llm_json(
     model must include provider prefix (e.g., openai/gpt-4o, anthropic/claude-3-5-sonnet).
     see https://docs.litellm.ai/docs/providers for supported providers.
     """
+    # disable thinking for Qwen3 models when thinking_budget is 0
+    if thinking_budget <= 0:
+        user_prompt = "/no_think\n" + user_prompt
+
     kwargs: dict[str, Any] = {
         "model": model,
         "messages": [
@@ -150,29 +156,214 @@ def _query_llm_json(
     return cast(dict | list, retry_with_backoff(_call))
 
 
-def generate_cast(
+def scan_chapter_characters(
+    text: str,
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: str = DEFAULT_LLM_MODEL,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
+) -> list[dict]:
+    """scan a chapter and return all speaking characters with counts and gender."""
+    prompt = """List every character who SPEAKS (has dialogue) in this text.
+Output ONLY valid JSON, no markdown.
+
+For each character:
+- n: name exactly as it appears in the text
+- c: number of times they speak (dialogue lines count)
+- g: gender ("m" or "f")
+- al: list of alternate names/titles used for the same character in the text
+
+Include "Narrator" for the narrative voice.
+
+Output format (REQUIRED):
+{"chars":[{"n":"name","c":5,"g":"m","al":["alias1"]}]}
+"""
+
+    data = _query_llm_json(
+        prompt,
+        text,
+        model,
+        api_base,
+        api_key,
+        wrapper_keys=["chars", "characters"],
+        thinking_budget=thinking_budget,
+    )
+
+    results = []
+    for item in cast(list, data):
+        if not isinstance(item, dict):
+            continue
+        results.append({
+            "name": str(item.get("n", item.get("name", ""))),
+            "count": int(item.get("c", item.get("count", 1))),
+            "gender": str(item.get("g", item.get("gender", "m"))),
+            "aliases": item.get("al", item.get("aliases", [])) or [],
+        })
+    return results
+
+
+def _cluster_by_name(entries: list[dict]) -> list[dict]:
+    """programmatic dedup pass: cluster entries by surname/substring similarity."""
+    merged: list[dict] = []
+    used: set[str] = set()
+
+    for entry in entries:
+        key = entry["name"].lower()
+        if key in used:
+            continue
+
+        cluster = [entry]
+        used.add(key)
+
+        for other in entries:
+            other_key = other["name"].lower()
+            if other_key in used:
+                continue
+            if _names_match(entry["name"], other["name"]):
+                cluster.append(other)
+                used.add(other_key)
+
+        canonical = min(cluster, key=lambda x: len(x["name"]))
+        total_count = sum(c["count"] for c in cluster)
+        all_aliases: set[str] = set()
+        for c in cluster:
+            all_aliases.add(c["name"])
+            all_aliases.update(c.get("aliases", []))
+        all_aliases.discard(canonical["name"])
+
+        merged.append({
+            "name": canonical["name"],
+            "count": total_count,
+            "gender": canonical["gender"],
+            "aliases": sorted(all_aliases) if all_aliases else [],
+        })
+
+    return merged
+
+
+def _names_match(a: str, b: str) -> bool:
+    """check if two character names refer to the same person."""
+    a_low, b_low = a.lower(), b.lower()
+    if a_low == b_low:
+        return True
+    a_surname = _last_word(a_low)
+    b_surname = _last_word(b_low)
+    if len(a_surname) >= 3 and len(b_surname) >= 3:
+        if a_surname == b_surname:
+            return True
+        if _fuzzy_ratio(a_surname, b_surname) >= 0.75:
+            return True
+    if len(a_low) >= 3 and len(b_low) >= 3:
+        if a_low in b_low or b_low in a_low:
+            return True
+    return False
+
+
+def merge_scanned_characters(
+    all_scans: list[list[dict]],
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: str = DEFAULT_LLM_MODEL,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
+) -> list[dict]:
+    """merge character lists: LLM semantic merge, then programmatic dedup."""
+    # flatten all scans
+    raw: dict[str, dict] = {}
+    for scan in all_scans:
+        for ch in scan:
+            name = ch["name"]
+            key = name.lower().strip()
+            if not key:
+                continue
+            if key in raw:
+                raw[key]["count"] += ch["count"]
+                raw[key]["aliases"] = list(set(raw[key]["aliases"]) | set(ch.get("aliases", [])))
+            else:
+                raw[key] = {
+                    "name": name,
+                    "count": ch["count"],
+                    "gender": ch.get("gender", "m"),
+                    "aliases": list(ch.get("aliases", [])),
+                }
+
+    char_list = sorted(raw.values(), key=lambda x: -x["count"])
+    summary = json.dumps(char_list, ensure_ascii=False, indent=2)
+
+    # pass 1: LLM merge (catches semantic duplicates like nicknames)
+    prompt = """Merge and deduplicate this character list. Output ONLY valid JSON.
+
+Rules:
+1. Characters that are the same person under different names/titles/spellings must be merged into ONE entry.
+2. Pick the shortest common name as "n". Put all variants in "al".
+3. Sum up "c" (counts) for merged characters.
+4. Keep "g" (gender).
+5. Remove entries with c=0.
+6. Each real person must appear exactly once.
+
+Output format (REQUIRED):
+{"chars":[{"n":"canonical name","c":total_count,"g":"m","al":["alias1","alias2"]}]}
+"""
+
+    data = _query_llm_json(
+        prompt,
+        summary,
+        model,
+        api_base,
+        api_key,
+        wrapper_keys=["chars", "characters"],
+        thinking_budget=thinking_budget,
+    )
+
+    llm_merged = []
+    for item in cast(list, data):
+        if not isinstance(item, dict):
+            continue
+        llm_merged.append({
+            "name": str(item.get("n", item.get("name", ""))),
+            "count": int(item.get("c", item.get("count", 1))),
+            "gender": str(item.get("g", item.get("gender", "m"))),
+            "aliases": item.get("al", item.get("aliases", [])) or [],
+        })
+
+    # pass 2: programmatic dedup (catches what LLM missed)
+    result = _cluster_by_name(llm_merged)
+
+    # filter zero-count and ensure Narrator
+    result = [m for m in result if m["count"] > 0]
+    for m in result:
+        if m["name"].lower() in ("narrator", "\u043d\u0430\u0440\u0440\u0430\u0442\u043e\u0440", "\u0440\u0430\u0441\u0441\u043a\u0430\u0437\u0447\u0438\u043a"):
+            if m["name"] != "Narrator":
+                m["aliases"].append(m["name"])
+                m["name"] = "Narrator"
+            break
+
+    return sorted(result, key=lambda x: -x["count"])
+
+
+def generate_cast_from_scan(
+    scanned_characters: list[dict],
     text_sample: str,
     api_base: Optional[str] = None,
     api_key: Optional[str] = None,
     model: str = DEFAULT_LLM_MODEL,
-    existing_cast_summary: Optional[str] = None,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> List[Character]:
-    """analyze text to identify characters and generate voice descriptions."""
-    context_str = (
-        f"\nExisting Cast:\n{existing_cast_summary}\n" if existing_cast_summary else ""
-    )
+    """generate voice descriptions for pre-scanned characters."""
+    char_summary = json.dumps(scanned_characters, ensure_ascii=False, indent=2)
 
-    prompt = f"""Identify book characters. Output ONLY valid JSON, no markdown.
+    prompt = f"""Generate voice descriptions for these book characters. Output ONLY valid JSON.
+
+Characters to describe:
+{char_summary}
 
 Rules:
-1. For each character: n (name), d (vocal description), a (audition line), al (aliases).
+1. For each character: n (EXACT same name), d (vocal description), a (audition line), al (EXACT same aliases), g (EXACT same gender).
 2. Vocal description 'd': timbre, pitch, speed, gender, age.
-3. Use full name for 'n', variations in 'al'.
-4. Omit existing characters unless updating.
-{context_str}
+3. Audition line 'a': write in the SAME LANGUAGE as the text sample below. Use a short quote or typical line.
+4. Keep the EXACT name from the input, do NOT rename.
+
 Output format (REQUIRED):
-{{"c":[{{"n":"Name","d":"voice description","a":"sample line","al":["alias1"]}}]}}
+{{"c":[{{"n":"name","d":"voice description","a":"audition line","al":["alias"],"g":"m"}}]}}
 """
 
     data = _query_llm_json(
@@ -191,6 +382,57 @@ Output format (REQUIRED):
             description=str(c.get("d", c.get("description", ""))),
             audition_line=str(c.get("a", c.get("audition_line", ""))),
             aliases=c.get("al", c.get("aliases")),
+            gender=c.get("g", c.get("gender")),
+        )
+        for c in cast(list, data)
+        if isinstance(c, dict)
+    ]
+
+
+def generate_cast(
+    text_sample: str,
+    api_base: Optional[str] = None,
+    api_key: Optional[str] = None,
+    model: str = DEFAULT_LLM_MODEL,
+    existing_cast_summary: Optional[str] = None,
+    thinking_budget: int = DEFAULT_THINKING_BUDGET,
+) -> List[Character]:
+    """analyze text to identify characters and generate voice descriptions."""
+    context_str = (
+        f"\nExisting Cast:\n{existing_cast_summary}\n" if existing_cast_summary else ""
+    )
+
+    prompt = f"""Identify book characters. Output ONLY valid JSON, no markdown.
+
+Rules:
+1. For each character: n (name), d (vocal description), a (audition line), al (aliases), g (gender: "m" or "f").
+2. Vocal description 'd': timbre, pitch, speed, gender, age.
+3. Use the character name AS IT APPEARS in the source text for 'n'. Put alternate spellings/translations in 'al'.
+4. Audition line 'a': write in the SAME LANGUAGE as the source text. Use a quote from the text.
+5. If a character matches an existing one, use the EXACT existing 'n' value and add new aliases.
+6. Update existing characters if their audition line 'a' is not in the source text language.
+{context_str}
+Output format (REQUIRED):
+{{"c":[{{"n":"NameFromText","d":"voice description","a":"line from text","al":["AlternateName"],"g":"m"}}]}}
+"""
+
+    data = _query_llm_json(
+        prompt,
+        text_sample,
+        model,
+        api_base,
+        api_key,
+        wrapper_keys=["c", "characters"],
+        thinking_budget=thinking_budget,
+    )
+
+    return [
+        Character(
+            name=str(c.get("n", c.get("name", ""))),
+            description=str(c.get("d", c.get("description", ""))),
+            audition_line=str(c.get("a", c.get("audition_line", ""))),
+            aliases=c.get("al", c.get("aliases")),
+            gender=c.get("g", c.get("gender")),
         )
         for c in cast(list, data)
         if isinstance(c, dict)
@@ -220,6 +462,67 @@ def split_text_smart(text: str, max_words: int = 1500) -> List[str]:
     return chunks
 
 
+# cyrillic → latin transliteration for cross-script fuzzy matching
+_CYR_TO_LAT = str.maketrans(
+    "абвгдеёжзийклмнопрстуфхцчшщъыьэюя",
+    "abvgdeežziiklmnoprstufhccššʺyʹèûâ",
+)
+
+
+def _to_latin(s: str) -> str:
+    """transliterate cyrillic to latin for cross-script comparison."""
+    return s.lower().translate(_CYR_TO_LAT)
+
+
+def _build_speaker_map(characters_list: List[Character]) -> dict[str, str]:
+    """build a case-insensitive map from all known names/aliases to canonical name."""
+    speaker_map: dict[str, str] = {}
+    for c in characters_list:
+        speaker_map[c.name.lower()] = c.name
+        if c.aliases:
+            for alias in c.aliases:
+                speaker_map[alias.lower()] = c.name
+    return speaker_map
+
+
+def _fuzzy_ratio(a: str, b: str) -> float:
+    """similarity ratio that handles cross-script (cyrillic/latin) comparison."""
+    ratio = difflib.SequenceMatcher(None, a, b).ratio()
+    if ratio < 0.5:
+        ratio = max(ratio, difflib.SequenceMatcher(None, _to_latin(a), _to_latin(b)).ratio())
+    return ratio
+
+
+def _last_word(name: str) -> str:
+    """extract the last word (surname) from a name."""
+    parts = name.split()
+    return parts[-1] if parts else name
+
+
+def _normalize_speaker(name: str, speaker_map: dict[str, str]) -> str:
+    """resolve a speaker name to its canonical form using fuzzy matching."""
+    key = name.lower()
+    if key in speaker_map:
+        return speaker_map[key]
+    # partial match: check if the last word (surname) matches
+    surname = _last_word(key)
+    if len(surname) >= 3:
+        for map_key, canonical in speaker_map.items():
+            map_surname = _last_word(map_key)
+            if surname == map_surname or _fuzzy_ratio(surname, map_surname) >= 0.75:
+                return canonical
+    # full fuzzy match (cross-script aware)
+    best_canonical, best_ratio = None, 0.0
+    for map_key, canonical in speaker_map.items():
+        ratio = _fuzzy_ratio(key, map_key)
+        if ratio > best_ratio:
+            best_ratio = ratio
+            best_canonical = canonical
+    if best_ratio >= 0.75 and best_canonical:
+        return best_canonical
+    return name
+
+
 def process_script_chunk(
     text_chunk: str,
     characters_list: List[Character],
@@ -240,12 +543,10 @@ Rules:
 2. Narrator speaks all unquoted text.
 3. Characters speak only words inside quotes. Use "Extra Female/Male" if unknown.
 4. EXACT text only - do not add or remove words.
+5. For "s" field, copy-paste the EXACT character name from the Cast list above. NEVER translate, transliterate, or modify the name in any way.
 
 Output format (REQUIRED - use these exact keys):
-{{"seg":[{{"s":"SpeakerName","t":"exact text","i":"mood"}}]}}
-
-Example: "Hi," John said. ->
-{{"seg":[{{"s":"John","t":"Hi.","i":"warm"}},{{"s":"Narrator","t":"John said.","i":"narrative"}}]}}
+{{"seg":[{{"s":"exact name from Cast","t":"exact text","i":"mood"}}]}}
 """
 
     data = _query_llm_json(
@@ -258,7 +559,8 @@ Example: "Hi," John said. ->
         thinking_budget=thinking_budget,
     )
 
-    return _parse_script_segments(data)
+    speaker_map = _build_speaker_map(characters_list)
+    return _parse_script_segments(data, speaker_map)
 
 
 def _format_cast_list(characters_list: List[Character]) -> str:
@@ -272,7 +574,9 @@ def _format_cast_list(characters_list: List[Character]) -> str:
     return "\n- ".join(cast_info)
 
 
-def _parse_script_segments(data: list | dict) -> List[ScriptSegment]:
+def _parse_script_segments(
+    data: list | dict, speaker_map: dict[str, str] | None = None
+) -> List[ScriptSegment]:
     """parse LLM response into ScriptSegment list with robust error handling."""
     if not isinstance(data, list):
         raise ValueError(f"expected list of segments, got {type(data).__name__}")
@@ -281,15 +585,20 @@ def _parse_script_segments(data: list | dict) -> List[ScriptSegment]:
     for i, s in enumerate(data):
         if not isinstance(s, dict):
             continue
-        if "s" not in s or "t" not in s or "i" not in s:
-            missing = [k for k in ["s", "t", "i"] if k not in s]
-            preview = str(s)[:100] + "..." if len(str(s)) > 100 else str(s)
-            raise KeyError(f"segment {i} missing keys {missing}: {preview}")
+        if "s" not in s or "t" not in s:
+            # skip malformed segments (e.g. {"i": "narrative"} with no speaker/text)
+            continue
+        text = s["t"]
+        if not text or not text.strip():
+            continue
+        speaker = s["s"]
+        if speaker_map:
+            speaker = _normalize_speaker(speaker, speaker_map)
         results.append(
             ScriptSegment(
-                speaker=s["s"],
-                text=s["t"],
-                instruction=s["i"],
+                speaker=speaker,
+                text=text,
+                instruction=s.get("i", "narrative"),
             )
         )
     return results
@@ -317,9 +626,10 @@ Rules:
 2. Narrator speaks all unquoted text.
 3. Characters speak only words inside quotes.
 4. EXACT text only - do not add or remove words.
+5. For "s" field, copy-paste the EXACT character name from the Cast list above. NEVER translate, transliterate, or modify the name.
 
 Output format (REQUIRED - use these exact keys):
-{{"seg":[{{"s":"SpeakerName","t":"exact text","i":"mood"}}]}}
+{{"seg":[{{"s":"exact name from Cast","t":"exact text","i":"mood"}}]}}
 """
 
     user_content = f"""
@@ -344,4 +654,5 @@ CONTEXT AFTER:
         thinking_budget=thinking_budget,
     )
 
-    return _parse_script_segments(data)
+    speaker_map = _build_speaker_map(characters_list)
+    return _parse_script_segments(data, speaker_map)
