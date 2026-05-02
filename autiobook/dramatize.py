@@ -394,7 +394,11 @@ def run_scan(
 
     if not chapters_to_process:
         print(f"scan: all {len(chapters or chapter_map)} chapters up to date.")
-        merged = existing.get("merged", []) if scan_path.exists() else []
+        # always re-merge from per_chapter data (merge logic may have changed)
+        merged = merge_scanned_characters(all_scans)
+        with open(scan_path, "w", encoding="utf-8") as f:
+            json.dump({"per_chapter": all_scans, "merged": merged}, f, indent=2, ensure_ascii=False)
+        print(f"scan: {len(merged)} characters after merge")
         return merged
 
     print(f"scan: scanning {len(chapters_to_process)} chapters...")
@@ -423,11 +427,9 @@ def run_scan(
         resume.update(str(num), chapter_hashes[num])
         resume.save()
 
-    # merge across chapters: LLM semantic merge + programmatic dedup
+    # merge across chapters programmatically
     print("scan: merging characters across chapters...")
-    merged = merge_scanned_characters(
-        all_scans, api_base, api_key, model or DEFAULT_LLM_MODEL, thinking_budget
-    )
+    merged = merge_scanned_characters(all_scans)
 
     if verbose:
         for c in merged:
@@ -866,6 +868,17 @@ def _perform_pooled(
         if g:
             gender_map[c.name] = g
 
+    # pre-create voice clone prompts once per character (major speedup)
+    voice_prompts: dict[str, Any] = {}  # char name -> cached prompt
+    for c in cast_chars:
+        wav_path = voices_dir / f"{c.name}{WAV_EXT}"
+        if wav_path.exists() and c.audition_line:
+            try:
+                prompt = engine.create_voice_prompt(str(wav_path), c.audition_line)
+                voice_prompts[c.name] = prompt
+            except Exception as e:
+                print(f"  warning: failed to create prompt for {c.name}: {e}")
+
     for txt_path, wav_path in pending:
         segments = load_script(txt_path)
         if not segments:
@@ -875,7 +888,6 @@ def _perform_pooled(
         for segment in segments:
             char_opt = cast_map.get(segment.speaker)
             if char_opt is None:
-                # fuzzy resolve before giving up
                 resolved = _normalize_speaker(segment.speaker, speaker_map)
                 char_opt = cast_map.get(resolved)
             if char_opt is None:
@@ -894,6 +906,7 @@ def _perform_pooled(
 
             ref_audio_path = voices_dir / f"{char_opt.name}{WAV_EXT}" if char_opt else None
             ref_text = char_opt.audition_line if char_opt else None
+            cached_prompt = voice_prompts.get(char_name)
 
             seg_data = {
                 "text": segment.text,
@@ -902,9 +915,11 @@ def _perform_pooled(
                 "char_hash": char_hash,
             }
 
+            # split long segments into shorter chunks for faster batch processing
+            perform_chunk_size = min(engine.config.chunk_size, 200)
             text_chunks = (
-                [c for c in chunk_text(segment.text, engine.config.chunk_size) if c.strip()]
-                if len(segment.text) > engine.config.chunk_size
+                [c for c in chunk_text(segment.text, perform_chunk_size) if c.strip()]
+                if len(segment.text) > perform_chunk_size
                 else [segment.text]
             )
 
@@ -922,6 +937,7 @@ def _perform_pooled(
                         segments_dir=segments_dir,
                         voice_ref_audio=ref_audio_path,
                         voice_ref_text=ref_text,
+                        voice_clone_prompt=cached_prompt,
                         instruct=segment.instruction or (char_opt.description if char_opt else ""),
                     )
                 )

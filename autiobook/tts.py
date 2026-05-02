@@ -94,6 +94,15 @@ def setup_rocm_env():
         os.environ.setdefault(k, v)
 
 
+def setup_mps_flash_attn():
+    """enable mps-flash-attn drop-in SDPA replacement if available."""
+    try:
+        from mps_flash_attn import replace_sdpa
+        replace_sdpa()
+    except ImportError:
+        pass
+
+
 @dataclass
 class TTSConfig:
     """configuration for tts generation."""
@@ -108,7 +117,7 @@ class TTSConfig:
     warmup: bool = True
     do_sample: bool = True
     temperature: float = 0.9
-    max_new_tokens: int = 2048
+    max_new_tokens: int = 1024
 
 
 class TTSEngine:
@@ -117,6 +126,8 @@ class TTSEngine:
     def __init__(self, config: TTSConfig | None = None):
         setup_rocm_env()
         self.config = config or TTSConfig()
+        if is_mps(self.config.device):
+            setup_mps_flash_attn()
         self._model = None
         self._loaded_model_name = None
         self._compiled = False
@@ -186,9 +197,16 @@ class TTSEngine:
         """helper to run inference with correct context and params."""
         self._load_model()
         func = getattr(self._model, func_name)
+
+        # for batch calls, expand language to a list matching text length
+        text = kwargs.get("text")
+        lang = self.config.language
+        if isinstance(text, list):
+            lang = [lang] * len(text)
+
         kwargs.update(
             {
-                "language": self.config.language,
+                "language": lang,
                 "non_streaming_mode": True,
                 "do_sample": self.config.do_sample,
                 "temperature": self.config.temperature,
@@ -239,27 +257,51 @@ class TTSEngine:
         )
         return wavs[0], sr
 
-    def clone_voice(
+    def create_voice_prompt(
         self,
-        text: str | list[str],
         ref_audio: np.ndarray | tuple | str,
         ref_text: str,
-    ) -> tuple[np.ndarray | list[np.ndarray], int]:
-        """clone voice from reference audio."""
-        # ensure ref_audio is a tuple (audio, sr) as required by qwen_tts
+    ) -> Any:
+        """create a reusable voice clone prompt from reference audio."""
+        self._load_model()
         if isinstance(ref_audio, (str, Path)):
             audio_data, audio_sr = sf.read(str(ref_audio))
             ref_audio = (audio_data, audio_sr)
         elif isinstance(ref_audio, np.ndarray):
-            # assume default sample rate if raw array passed
             ref_audio = (ref_audio, SAMPLE_RATE)
-
-        wavs, sr = self._run_inference(
-            "generate_voice_clone",
-            text=text,
+        return self._model.create_voice_clone_prompt(
             ref_audio=ref_audio,
             ref_text=ref_text,
         )
+
+    def clone_voice(
+        self,
+        text: str | list[str],
+        ref_audio: np.ndarray | tuple | str | None = None,
+        ref_text: str | None = None,
+        voice_clone_prompt: Any = None,
+    ) -> tuple[np.ndarray | list[np.ndarray], int]:
+        """clone voice from reference audio or cached prompt."""
+        if voice_clone_prompt is not None:
+            wavs, sr = self._run_inference(
+                "generate_voice_clone",
+                text=text,
+                voice_clone_prompt=voice_clone_prompt,
+                max_new_tokens=self.config.max_new_tokens,
+            )
+        else:
+            if isinstance(ref_audio, (str, Path)):
+                audio_data, audio_sr = sf.read(str(ref_audio))
+                ref_audio = (audio_data, audio_sr)
+            elif isinstance(ref_audio, np.ndarray):
+                ref_audio = (ref_audio, SAMPLE_RATE)
+            wavs, sr = self._run_inference(
+                "generate_voice_clone",
+                text=text,
+                ref_audio=ref_audio,
+                ref_text=ref_text,
+                max_new_tokens=self.config.max_new_tokens,
+            )
 
         if isinstance(text, str):
             return wavs[0], sr

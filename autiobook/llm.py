@@ -251,10 +251,15 @@ def _names_match(a: str, b: str) -> bool:
     if len(a_surname) >= 3 and len(b_surname) >= 3:
         if a_surname == b_surname:
             return True
-        if _fuzzy_ratio(a_surname, b_surname) >= 0.75:
+        # require higher threshold for short names to avoid false matches
+        min_len = min(len(a_surname), len(b_surname))
+        threshold = 0.85 if min_len <= 5 else 0.75
+        if _fuzzy_ratio(a_surname, b_surname) >= threshold:
             return True
-    if len(a_low) >= 3 and len(b_low) >= 3:
-        if a_low in b_low or b_low in a_low:
+    # one name contains the other (only if the shorter one is substantial)
+    if len(a_low) >= 4 and len(b_low) >= 4:
+        shorter, longer = (a_low, b_low) if len(a_low) <= len(b_low) else (b_low, a_low)
+        if shorter in longer:
             return True
     return False
 
@@ -266,7 +271,7 @@ def merge_scanned_characters(
     model: str = DEFAULT_LLM_MODEL,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> list[dict]:
-    """merge character lists: LLM semantic merge, then programmatic dedup."""
+    """merge character lists from multiple chapters by clustering similar names."""
     # flatten all scans
     raw: dict[str, dict] = {}
     for scan in all_scans:
@@ -286,50 +291,19 @@ def merge_scanned_characters(
                     "aliases": list(ch.get("aliases", [])),
                 }
 
-    char_list = sorted(raw.values(), key=lambda x: -x["count"])
-    summary = json.dumps(char_list, ensure_ascii=False, indent=2)
+    entries = sorted(raw.values(), key=lambda x: -x["count"])
 
-    # pass 1: LLM merge (catches semantic duplicates like nicknames)
-    prompt = """Merge and deduplicate this character list. Output ONLY valid JSON.
+    # cluster by surname/substring similarity
+    result = _cluster_by_name(entries)
 
-Rules:
-1. Characters that are the same person under different names/titles/spellings must be merged into ONE entry.
-2. Pick the shortest common name as "n". Put all variants in "al".
-3. Sum up "c" (counts) for merged characters.
-4. Keep "g" (gender).
-5. Remove entries with c=0.
-6. Each real person must appear exactly once.
-
-Output format (REQUIRED):
-{"chars":[{"n":"canonical name","c":total_count,"g":"m","al":["alias1","alias2"]}]}
-"""
-
-    data = _query_llm_json(
-        prompt,
-        summary,
-        model,
-        api_base,
-        api_key,
-        wrapper_keys=["chars", "characters"],
-        thinking_budget=thinking_budget,
-    )
-
-    llm_merged = []
-    for item in cast(list, data):
-        if not isinstance(item, dict):
-            continue
-        llm_merged.append({
-            "name": str(item.get("n", item.get("name", ""))),
-            "count": int(item.get("c", item.get("count", 1))),
-            "gender": str(item.get("g", item.get("gender", "m"))),
-            "aliases": item.get("al", item.get("aliases", [])) or [],
-        })
-
-    # pass 2: programmatic dedup (catches what LLM missed)
-    result = _cluster_by_name(llm_merged)
-
-    # filter zero-count and ensure Narrator
+    # filter zero-count and single-word generic titles with low counts
     result = [m for m in result if m["count"] > 0]
+    # remove entries that are just generic titles (single word, low count)
+    # these get resolved to real characters by _normalize_speaker at script time
+    result = [
+        m for m in result
+        if len(m["name"].split()) > 1 or m["count"] >= 5 or m["name"] == "Narrator"
+    ]
     for m in result:
         if m["name"].lower() in ("narrator", "\u043d\u0430\u0440\u0440\u0430\u0442\u043e\u0440", "\u0440\u0430\u0441\u0441\u043a\u0430\u0437\u0447\u0438\u043a"):
             if m["name"] != "Narrator":

@@ -28,6 +28,7 @@ class AudioTask:
     segments_dir: Path
     voice_ref_audio: Optional[Path] = None
     voice_ref_text: Optional[str] = None
+    voice_clone_prompt: Optional[Any] = None  # cached VoiceClonePromptItem
     instruct: str = ""
     chapter_idx: int = 0  # for chapter-ordered scheduling
     metadata: Optional[dict[str, Any]] = None  # arbitrary metadata for callbacks
@@ -58,6 +59,15 @@ def _synthesize_batch(
     ref_audio = batch[0].voice_ref_audio
     ref_text = batch[0].voice_ref_text
     instruct = batch[0].instruct
+    has_prompt = batch[0].voice_clone_prompt is not None
+
+    if pbar and len(texts) > 1:
+        avg_len = sum(len(t) for t in texts) // len(texts)
+        max_len = max(len(t) for t in texts)
+        pbar.write(f"  batch: {len(texts)} segs, prompt={'yes' if has_prompt else 'no'}, avg={avg_len}c, max={max_len}c")
+
+    import time as _time
+    _batch_t0 = _time.time()
 
     # pad batch to avoid torch.compile recompilation/hangs on last batch
     original_size = len(texts)
@@ -75,12 +85,20 @@ def _synthesize_batch(
 
     try:
         if ref_audio:
-            wavs, _ = engine.clone_voice(texts, ref_audio, ref_text)
+            prompt = batch[0].voice_clone_prompt
+            if prompt is not None:
+                wavs, _ = engine.clone_voice(texts, voice_clone_prompt=prompt)
+            else:
+                wavs, _ = engine.clone_voice(texts, ref_audio, ref_text)
         else:
             wavs, _ = engine.synthesize(texts, instruct)
 
         if isinstance(wavs, np.ndarray):
             wavs = [wavs]
+
+        if pbar and len(texts) > 1:
+            _batch_elapsed = _time.time() - _batch_t0
+            pbar.write(f"  batch done: {_batch_elapsed:.1f}s for {len(batch)} segs = {_batch_elapsed/len(batch):.1f}s/seg")
 
         if padded:
             wavs = wavs[:original_size]
@@ -97,7 +115,37 @@ def _synthesize_batch(
                 pbar.update(1)
 
     except RuntimeError as e:
-        if "out of memory" in str(e).lower():
+        if "probability tensor" in str(e).lower() or "inf" in str(e).lower() or "nan" in str(e).lower():
+            # sampling produced invalid logits — retry with greedy decoding
+            if pbar:
+                pbar.write(f"  warning: sampling failed, retrying batch with greedy decoding")
+            try:
+                old_sample = engine.config.do_sample
+                engine.config.do_sample = False
+                if ref_audio:
+                    prompt = batch[0].voice_clone_prompt
+                    if prompt is not None:
+                        wavs, _ = engine.clone_voice(texts, voice_clone_prompt=prompt)
+                    else:
+                        wavs, _ = engine.clone_voice(texts, ref_audio, ref_text)
+                else:
+                    wavs, _ = engine.synthesize(texts, instruct)
+                engine.config.do_sample = old_sample
+
+                if isinstance(wavs, np.ndarray):
+                    wavs = [wavs]
+                if padded:
+                    wavs = wavs[:original_size]
+                for j, audio in enumerate(wavs):
+                    if j < len(batch):
+                        save_segment(batch[j].segments_dir, batch[j].segment_hash, audio, SAMPLE_RATE)
+                    if pbar:
+                        pbar.update(1)
+                return
+            except Exception as retry_e:
+                print(f"greedy retry also failed: {retry_e}")
+                raise retry_e
+        elif "out of memory" in str(e).lower():
             print("warning: OOM detected, clearing cache and retrying...")
             import torch
 
@@ -107,7 +155,11 @@ def _synthesize_batch(
                 torch.mps.empty_cache()
             try:
                 if ref_audio:
-                    wavs, _ = engine.clone_voice(texts, ref_audio, ref_text)
+                    prompt = batch[0].voice_clone_prompt
+                    if prompt is not None:
+                        wavs, _ = engine.clone_voice(texts, voice_clone_prompt=prompt)
+                    else:
+                        wavs, _ = engine.clone_voice(texts, ref_audio, ref_text)
                 else:
                     wavs, _ = engine.synthesize(texts, instruct)
 
@@ -296,9 +348,20 @@ def process_audio_pipeline(
         key = _get_voice_key(task)
         tasks_by_voice[key].append(task)
 
-    # sort tasks within each voice group by chapter index (earlier chapters first)
+    # sort tasks within each voice group by text length (similar lengths batch together)
     for tasks in tasks_by_voice.values():
-        tasks.sort(key=lambda t: t.chapter_idx)
+        tasks.sort(key=lambda t: len(t.text))
+
+    # re-bucket by voice + length tier so batches have uniform text lengths
+    LENGTH_TIERS = [50, 100, 200, 10000]  # char thresholds
+    rebucketed: dict[tuple, list[AudioTask]] = defaultdict(list)
+    for voice_key, tasks in tasks_by_voice.items():
+        for t in tasks:
+            tlen = len(t.text)
+            tier = next(th for th in LENGTH_TIERS if tlen <= th)
+            rebucketed[(voice_key, tier)].append(t)
+    tasks_by_voice.clear()
+    tasks_by_voice.update(rebucketed)
 
     total_tasks = len(all_pending_tasks)
     with tqdm(total=total_tasks, desc=desc, unit="seg") as pbar:
