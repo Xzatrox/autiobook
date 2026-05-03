@@ -7,5 +7,6 @@ __pycache__/
 /testdata_workdir/
 .env
 .DS_*
-/workdir/
+/workdir/**/export/
+/workdir/**/perform/segments
 /models/

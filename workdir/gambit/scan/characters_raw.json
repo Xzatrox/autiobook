@@ -1,0 +1,326 @@
+{
+  "per_chapter": [
+    [
+      {
+        "name": "Капитан Джеймс Т. Кирк",
+        "count": 24,
+        "gender": "m",
+        "aliases": [
+          "Капитан старших офицеров исследовательского звездолета",
+          "Капитан звездолета Федерации",
+          "Капитан"
+        ]
+      },
+      {
+        "name": "Мистер Спок",
+        "count": 9,
+        "gender": "m",
+        "aliases": [
+          "Спок",
+          "Мистер Споков"
+        ]
+      },
+      {
+        "name": "Мистер Зулу",
+        "count": 1,
+        "gender": "m",
+        "aliases": [
+          "Зулу"
+        ]
+      },
+      {
+        "name": "Лейтенант Ухура",
+        "count": 4,
+        "gender": "f",
+        "aliases": [
+          "Ухура"
+        ]
+      },
+      {
+        "name": "Мистер Скотт",
+        "count": 2,
+        "gender": "m",
+        "aliases": [
+          "Скотт",
+          "Скотти"
+        ]
+      },
+      {
+        "name": "Старший механик Макконел",
+        "count": 4,
+        "gender": "f",
+        "aliases": [
+          "Макконел"
+        ]
+      },
+      {
+        "name": "Нарятор",
+        "count": 0,
+        "gender": "None",
+        "aliases": []
+      },
+      {
+        "name": "Джим Кирк",
+        "count": 14,
+        "gender": "m",
+        "aliases": [
+          "капитан Кирк",
+          "кому адмирала Такетта"
+        ]
+      },
+      {
+        "name": "Мистер Спок",
+        "count": 9,
+        "gender": "m",
+        "aliases": [
+          "Спок",
+          "мистер Спок"
+        ]
+      },
+      {
+        "name": "Леонард Маккой",
+        "count": 8,
+        "gender": "m",
+        "aliases": [
+          "доктор Маккой",
+          "Боунз"
+        ]
+      },
+      {
+        "name": "Скотти",
+        "count": 2,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Зулу",
+        "count": 1,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Мистер Чехов",
+        "count": 4,
+        "gender": "m",
+        "aliases": [
+          "мичман Чехов",
+          "Чехов"
+        ]
+      },
+      {
+        "name": "Лейтенант Ухура",
+        "count": 2,
+        "gender": "f",
+        "aliases": []
+      },
+      {
+        "name": "Доктор М'Бенга",
+        "count": 1,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Капитан Кирк",
+        "count": 18,
+        "gender": "m",
+        "aliases": [
+          "Джим",
+          "Капитан Джеймс Т. Кирк"
+        ]
+      },
+      {
+        "name": "Маккой",
+        "count": 3,
+        "gender": "m",
+        "aliases": [
+          "Боунз"
+        ]
+      },
+      {
+        "name": "Спок",
+        "count": 5,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Доктор М'Бенга",
+        "count": 11,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Чехов",
+        "count": 5,
+        "gender": "m",
+        "aliases": [
+          "Мистер Чехов"
+        ]
+      },
+      {
+        "name": "Ухура",
+        "count": 3,
+        "gender": "f",
+        "aliases": [
+          "Лейтенант"
+        ]
+      },
+      {
+        "name": "Доктор Треллвон-да",
+        "count": 1,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Адмирал Такетт",
+        "count": 1,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Captain Kirk",
+        "count": 11,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Spock",
+        "count": 5,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Sulu",
+        "count": 3,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Dr. Trellvon-da",
+        "count": 6,
+        "gender": "m",
+        "aliases": [
+          "doctor"
+        ]
+      },
+      {
+        "name": "Kyle",
+        "count": 1,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Chekhov",
+        "count": 1,
+        "gender": "m",
+        "aliases": []
+      },
+      {
+        "name": "Uhura",
+        "count": 1,
+        "gender": "f",
+        "aliases": []
+      },
+      {
+        "name": "Taron",
+        "count": 1,
+        "gender": "m",
+        "aliases": [
+          "this fool"
+        ]
+      },
+      {
+        "name": "Narrator",
+        "count": 0,
+        "gender": "n",
+        "aliases": []
+      }
+    ]
+  ],
+  "merged": [
+    {
+      "name": "Джим Кирк",
+      "count": 67,
+      "gender": "m",
+      "aliases": [
+        "Captain Kirk",
+        "Джим",
+        "Капитан",
+        "Капитан Джеймс Т. Кирк",
+        "Капитан Кирк",
+        "Капитан звездолета Федерации",
+        "Капитан старших офицеров исследовательского звездолета",
+        "капитан Кирк",
+        "кому адмирала Такетта"
+      ]
+    },
+    {
+      "name": "Спок",
+      "count": 28,
+      "gender": "m",
+      "aliases": [
+        "Spock",
+        "Мистер Спок",
+        "Мистер Споков",
+        "мистер Спок"
+      ]
+    },
+    {
+      "name": "Доктор М'Бенга",
+      "count": 12,
+      "gender": "m",
+      "aliases": []
+    },
+    {
+      "name": "Маккой",
+      "count": 11,
+      "gender": "m",
+      "aliases": [
+        "Боунз",
+        "Леонард Маккой",
+        "доктор Маккой"
+      ]
+    },
+    {
+      "name": "Ухура",
+      "count": 10,
+      "gender": "f",
+      "aliases": [
+        "Uhura",
+        "Лейтенант",
+        "Лейтенант Ухура"
+      ]
+    },
+    {
+      "name": "Чехов",
+      "count": 9,
+      "gender": "m",
+      "aliases": [
+        "Мистер Чехов",
+        "мичман Чехов"
+      ]
+    },
+    {
+      "name": "Dr. Trellvon-da",
+      "count": 7,
+      "gender": "m",
+      "aliases": [
+        "doctor",
+        "Доктор Треллвон-да"
+      ]
+    },
+    {
+      "name": "Старший механик Макконел",
+      "count": 4,
+      "gender": "f",
+      "aliases": [
+        "Макконел"
+      ]
+    },
+    {
+      "name": "Адмирал Такетт",
+      "count": 1,
+      "gender": "m",
+      "aliases": []
+    }
+  ]
+}
