@@ -4,7 +4,7 @@ convert epub and fb2 files to audiobooks using qwen3-tts.
 
 ## requirements
 
-- python 3.12+
+- python 3.12
 - ffmpeg
 - sox
 - uv (python package manager)
@@ -31,12 +31,29 @@ uv venv && uv sync --extra rocm-gfx110x
 make build-cpu
 ```
 
+### windows amd gpu notes
+
+the `rocm-gfx110x` extra uses pre-built pytorch wheels from
+[TheRock](https://github.com/scottt/rocm-TheRock/releases/tag/v6.5.0rc-pytorch-gfx110x)
+with bundled ROCm 6.5. no separate HIP SDK or ZLUDA required.
+
+if you have both a discrete and integrated AMD GPU, set:
+```
+setx HIP_VISIBLE_DEVICES 0
+setx ROCR_VISIBLE_DEVICES 0
+```
+to target the discrete GPU (device 0).
+
 ## usage
 
 ### enter the venv
 
 ```bash
+# linux/mac
 source .venv/bin/activate
+
+# windows
+.venv\Scripts\activate
 
 autiobook --help
 ```
@@ -98,27 +115,67 @@ creates:
 
 ### dramatized conversion (llm)
 
-generate a full cast performance using openai-compatible llm
-(including llama.cpp) and voice cloning.
+generate a full cast performance using an openai-compatible llm and voice cloning.
+book language is detected automatically from metadata — voices and audition lines
+are generated in the correct language.
+
+#### using a cloud llm (recommended)
+
+free tier available on [NVIDIA NIM](https://build.nvidia.com):
+
+```bash
+autiobook dramatize book.epub -o workdir/ \
+  --api-key nvapi-... \
+  --api-base https://integrate.api.nvidia.com/v1 \
+  --model openai/mistralai/mistral-nemotron \
+  -c 1 -v
+```
+
+#### using a local llm (llama.cpp)
+
+```bash
+autiobook dramatize book.epub -o workdir/ \
+  --llm-server-model models/Qwen3-8B-Q4_K_M.gguf \
+  --api-key local \
+  -v
+```
+
+download model:
+```bash
+hf download Qwen/Qwen3-8B-GGUF Qwen3-8B-Q4_K_M.gguf --local-dir models
+```
+
+#### using a local hf model (transformers)
+
+runs on your GPU via ROCm/CUDA torch:
+
+```bash
+autiobook dramatize book.epub -o workdir/ \
+  --llm-server-hf-model Qwen/Qwen3-4B \
+  --api-key local \
+  -v
+```
+
+#### step by step
 
 ```bash
 # 1. extract text
 autiobook extract book.epub -o workdir/
 
 # 2. generate cast list (using llm)
-autiobook cast workdir/ --api-key sk-...
+autiobook cast workdir/ --api-key nvapi-... --api-base https://integrate.api.nvidia.com/v1 --model openai/mistralai/mistral-nemotron
 
 # 3. generate voice auditions (review/edit characters.json first if needed)
 autiobook audition workdir/
 
 # 4. create dramatized script (using llm)
-autiobook script workdir/ --api-key sk-...
+autiobook script workdir/ --api-key nvapi-...
 
 # 5. validate script against source (optional)
 autiobook validate workdir/
 
 # 6. fix any issues found (optional)
-autiobook fix workdir/ --api-key sk-...
+autiobook fix workdir/ --api-key nvapi-...
 
 # 7. perform the script (voice cloning)
 autiobook perform workdir/
@@ -130,7 +187,7 @@ autiobook export workdir/
 or run the full dramatization pipeline in one go:
 
 ```bash
-autiobook dramatize workdir/ --api-key sk-...
+autiobook dramatize book.epub -o workdir/ --api-key nvapi-... --api-base https://integrate.api.nvidia.com/v1 --model openai/mistralai/mistral-nemotron
 ```
 
 ### script validation and repair
@@ -172,10 +229,24 @@ autiobook fix workdir/ --missing --context-paragraphs 3 --api-key sk-...
 - `-s, --speaker NAME` - tts voice (default: Ryan)
 - `-c, --chapters RANGE` - chapter selection (e.g., 1-5, 3,7,10)
 - `-v, --verbose` - verbose output
+- `--api-key KEY` - llm api key
+- `--api-base URL` - llm api base url (for openai-compatible endpoints)
+- `--model NAME` - llm model name (with provider prefix, e.g. `openai/mistralai/mistral-nemotron`)
+- `--llm-server-model PATH` - path to GGUF model to auto-start llama-server
+- `--llm-server-hf-model ID` - huggingface model id to auto-start transformers server (uses local gpu)
 
-### available voices
+### available voices (convert/synthesize)
 
 Vivian, Ryan, Sunny, Aria, Bella, Nova, Echo, Finn, Atlas
+
+## language support
+
+book language is detected automatically from epub/fb2 metadata.
+supported languages for dramatized conversion:
+Russian, English, Chinese, Japanese, Korean, German, French, Portuguese, Spanish, Italian.
+
+default cast voices (Narrator, Extra Female, Extra Male) use language-appropriate
+descriptions and audition lines automatically.
 
 ## output
 
