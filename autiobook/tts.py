@@ -46,7 +46,8 @@ def get_default_device() -> str:
     if has_cuda or has_rocm:
         device_count = torch.cuda.device_count()
         if device_count > 0:
-            device_type = "cuda"
+            # always use device 0 (discrete GPU) for TTS
+            device_type = "cuda:0"
         else:
             print("WARNING: CUDA/ROCm libraries detected but no devices found. Fallback to CPU.")
             device_type = "cpu"

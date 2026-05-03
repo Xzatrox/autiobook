@@ -11,12 +11,20 @@ import litellm
 
 from .config import (
     DEFAULT_LLM_MODEL,
+    DEFAULT_LOCAL_LLM_MODEL,
     DEFAULT_THINKING_BUDGET,
     LLM_MAX_RETRIES,
     LLM_RETRY_DELAY,
 )
 
 T = TypeVar("T")
+
+
+def _clean_description(text: str) -> str:
+    """remove garbage non-text characters from voice descriptions."""
+    # only remove characters from non-latin/cyrillic/common scripts
+    # keep all standard punctuation including unicode typographic chars
+    return re.sub(r"[\u0600-\u06FF\u0590-\u05FF\u0900-\u097F\u4E00-\u9FFF]", "", text).strip()
 
 
 def retry_with_backoff(
@@ -84,6 +92,11 @@ def _parse_json_response(content: str) -> dict | list:
         content = content[:-3]
 
     content = content.strip()
+
+    # fix invalid escape sequences from LLM output
+    content = re.sub(r'\\u[0-9a-fA-F]{0,3}(?![0-9a-fA-F])', '', content)
+    content = re.sub(r'\\([^"\\//bfnrtu])', r'\1', content)
+
     try:
         return cast(dict | list, json.loads(content))
     except json.JSONDecodeError:
@@ -107,7 +120,7 @@ def _query_llm_json(
     see https://docs.litellm.ai/docs/providers for supported providers.
     """
     # disable thinking for Qwen3 models when thinking_budget is 0
-    if thinking_budget <= 0:
+    if thinking_budget <= 0 and "qwen" in model.lower():
         user_prompt = "/no_think\n" + user_prompt
 
     kwargs: dict[str, Any] = {
@@ -116,8 +129,12 @@ def _query_llm_json(
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "response_format": {"type": "json_object"},
+        "max_tokens": 4096,
     }
+
+    # only pass response_format for endpoints that support it
+    if not api_base or "openai.com" in api_base or "anthropic.com" in api_base:
+        kwargs["response_format"] = {"type": "json_object"}
 
     if api_base:
         kwargs["api_base"] = api_base
@@ -164,19 +181,15 @@ def scan_chapter_characters(
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
 ) -> list[dict]:
     """scan a chapter and return all speaking characters with counts and gender."""
-    prompt = """List every character who SPEAKS (has dialogue) in this text.
-Output ONLY valid JSON, no markdown.
+    prompt = """List the main speaking characters in this text. Output ONLY valid JSON.
+Ignore pronouns, committees, devices, and unnamed references.
+Merge name variants of the same person into one entry.
 
-For each character:
-- n: name exactly as it appears in the text
-- c: number of times they speak (dialogue lines count)
-- g: gender ("m" or "f")
-- al: list of alternate names/titles used for the same character in the text
+Output format (REQUIRED, be concise):
+{"chars":[{"n":"canonical name","c":5,"g":"m","al":["alias"]}]}
 
-Include "Narrator" for the narrative voice.
-
-Output format (REQUIRED):
-{"chars":[{"n":"name","c":5,"g":"m","al":["alias1"]}]}
+Fields: n=canonical name, c=total dialogue lines, g=gender(m/f), al=other names used.
+Include Narrator. Maximum 15 characters.
 """
 
     data = _query_llm_json(
@@ -321,6 +334,7 @@ def generate_cast_from_scan(
     api_key: Optional[str] = None,
     model: str = DEFAULT_LLM_MODEL,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
+    language: str = "en",
 ) -> List[Character]:
     """generate voice descriptions for pre-scanned characters."""
     char_summary = json.dumps(scanned_characters, ensure_ascii=False, indent=2)
@@ -332,12 +346,12 @@ Characters to describe:
 
 Rules:
 1. For each character: n (EXACT same name), d (vocal description), a (audition line), al (EXACT same aliases), g (EXACT same gender).
-2. Vocal description 'd': timbre, pitch, speed, gender, age.
-3. Audition line 'a': write in the SAME LANGUAGE as the text sample below. Use a short quote or typical line.
+2. Vocal description 'd': timbre, pitch, speed, gender, age. Write in {language} language.
+3. Audition line 'a': a quote SPOKEN BY this character (their own words, not words said about them). Must be 10-30 words. Copy verbatim from the text sample.
 4. Keep the EXACT name from the input, do NOT rename.
 
 Output format (REQUIRED):
-{{"c":[{{"n":"name","d":"voice description","a":"audition line","al":["alias"],"g":"m"}}]}}
+{{"c":[{{"n":"name","d":"voice description","a":"quote spoken by character","al":["alias"],"g":"m"}}]}}
 """
 
     data = _query_llm_json(
@@ -350,17 +364,48 @@ Output format (REQUIRED):
         thinking_budget=thinking_budget,
     )
 
-    return [
+    results = [
         Character(
             name=str(c.get("n", c.get("name", ""))),
-            description=str(c.get("d", c.get("description", ""))),
-            audition_line=str(c.get("a", c.get("audition_line", ""))),
+            description=_clean_description(str(c.get("d", c.get("description", "")))),
+            audition_line=str(c.get("a", c.get("audition_line", ""))).strip(),
             aliases=c.get("al", c.get("aliases")),
             gender=c.get("g", c.get("gender")),
         )
         for c in cast(list, data)
         if isinstance(c, dict)
     ]
+
+    # fill empty, too-short, or truncated audition lines with a second LLM call
+    bad_chars = [
+        c for c in results
+        if not c.audition_line
+        or len(c.audition_line.split()) < 8
+        or (c.audition_line[-1] not in '.!?\u00bb"' and not c.audition_line.endswith('...'))
+    ]
+    if bad_chars:
+        names = ", ".join(c.name for c in bad_chars)
+        fix_prompt = f"""Find one quote (10-25 words) SPOKEN BY each of these characters in the text. Output ONLY valid JSON.
+Characters: {names}
+Output: {{"lines":{{"character name":"their exact spoken words"}}}}"""
+        try:
+            fix_data = _query_llm_json(fix_prompt, text_sample, model, api_base, api_key,
+                                       wrapper_keys=["lines"], thinking_budget=thinking_budget)
+            if isinstance(fix_data, dict):
+                for char in bad_chars:
+                    line = str(fix_data.get(char.name, "")).strip()
+                    if line and len(line.split()) >= 8:
+                        char.audition_line = line
+        except Exception:
+            pass
+    # final fallback for still-empty lines
+    for char in results:
+        if not char.audition_line or len(char.audition_line.split()) < 3:
+            lang = language[:2].lower()
+            from .config import DEFAULT_CAST_LINES
+            char.audition_line = DEFAULT_CAST_LINES.get(lang, DEFAULT_CAST_LINES["en"]).get("Narrator", "")
+
+    return results
 
 
 def generate_cast(
@@ -413,25 +458,27 @@ Output format (REQUIRED):
     ]
 
 
-def split_text_smart(text: str, max_words: int = 1500) -> List[str]:
-    """split text into chunks at paragraph boundaries."""
-    paragraphs = text.split("\n\n")
+def split_text_smart(text: str, max_words: int = 600) -> List[str]:
+    """split text into chunks at sentence boundaries without exceeding max_words."""
+    # split into sentences at natural delimiters
+    sentence_endings = re.compile(r'(?<=[.!?…])\s+')
+    sentences = sentence_endings.split(text)
+
     chunks = []
-    current_chunk: List[str] = []
+    current: List[str] = []
     current_count = 0
 
-    for p in paragraphs:
-        word_count = len(p.split())
-        if current_count + word_count > max_words and current_chunk:
-            chunks.append("\n\n".join(current_chunk))
-            current_chunk = []
+    for sentence in sentences:
+        word_count = len(sentence.split())
+        if current_count + word_count > max_words and current:
+            chunks.append(" ".join(current))
+            current = []
             current_count = 0
-
-        current_chunk.append(p)
+        current.append(sentence)
         current_count += word_count
 
-    if current_chunk:
-        chunks.append("\n\n".join(current_chunk))
+    if current:
+        chunks.append(" ".join(current))
 
     return chunks
 

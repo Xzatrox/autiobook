@@ -28,8 +28,9 @@ SAMPLE_RATE = 24000
 
 # llm settings
 DEFAULT_LLM_MODEL = os.getenv("AUTIOBOOK_MODEL", "openai/gpt-4o")
+DEFAULT_LOCAL_LLM_MODEL = "openai/local"
 DEFAULT_THINKING_BUDGET = int(os.getenv("AUTIOBOOK_THINKING_BUDGET", "0"))
-LLM_MAX_RETRIES = 3
+LLM_MAX_RETRIES = 5
 LLM_RETRY_DELAY = 1.0  # initial delay in seconds, doubles on each retry
 
 # audio processing
@@ -104,31 +105,64 @@ SHOWCASE_EMOTIONS = {
 DEFAULT_CAST = [
     {
         "name": "Narrator",
-        "description": (
-            "Warm, articulate male voice; mature age; measured slow pace; "
-            "authoritative yet compassionate."
-        ),
-        "audition_line": (
-            "The history of the valley wasn't written in books, but in the layers "
-            "of sediment resting quietly beneath the river."
-        ),
+        "description": "Warm, articulate male voice; mature age; measured slow pace; authoritative yet compassionate.",
+        "audition_line": None,
     },
     {
         "name": "Extra Female",
         "description": "Neutral, casual, female voice, young adult; lower than average pitch.",
-        "audition_line": (
-            "I really don't think we should be going in there without a map; "
-            "honestly, it looks dangerous."
-        ),
+        "audition_line": None,
     },
     {
         "name": "Extra Male",
-        "description": (
-            "Gruff, textured baritone voice; older adult; relaxed slow speed; weary but kind."
-        ),
-        "audition_line": (
-            "Just hold the light steady for a minute. I've got to get this wire "
-            "connected before the generator fails."
-        ),
+        "description": "Gruff, textured baritone voice; older adult; relaxed slow speed; weary but kind.",
+        "audition_line": None,
     },
 ]
+
+# fallback audition lines and descriptions by language code
+DEFAULT_CAST_LINES: dict[str, dict[str, str]] = {
+    "en": {
+        "Narrator": "The history of the valley wasn't written in books, but in the layers of sediment resting quietly beneath the river.",
+        "Extra Female": "I really don't think we should be going in there without a map; honestly, it looks dangerous.",
+        "Extra Male": "Just hold the light steady for a minute. I've got to get this wire connected before the generator fails.",
+    },
+    "ru": {
+        "Narrator": "История долины была написана не в книгах, а в слоях осадка, покоящихся под рекой.",
+        "Extra Female": "Я правда не думаю, что нам стоит туда идти без карты — честно говоря, это выглядит опасно.",
+        "Extra Male": "Держи фонарь ровно, мне нужно подключить этот провод, пока генератор не отказал.",
+    },
+    "de": {
+        "Narrator": "Die Geschichte des Tals war nicht in Büchern geschrieben, sondern in den Sedimentschichten unter dem Fluss.",
+        "Extra Female": "Ich glaube wirklich nicht, dass wir da ohne Karte reingehen sollten — ehrlich gesagt sieht das gefährlich aus.",
+        "Extra Male": "Halt die Lampe ruhig, ich muss dieses Kabel anschließen, bevor der Generator ausfällt.",
+    },
+    "fr": {
+        "Narrator": "L'histoire de la vallée n'était pas écrite dans les livres, mais dans les couches de sédiments sous la rivière.",
+        "Extra Female": "Je ne pense vraiment pas qu'on devrait y aller sans carte — honnêtement, ça a l'air dangereux.",
+        "Extra Male": "Tiens la lampe stable, je dois connecter ce câble avant que le générateur tombe en panne.",
+    },
+}
+
+DEFAULT_CAST_DESCRIPTIONS: dict[str, dict[str, str]] = {
+    "en": {
+        "Narrator": "Warm, articulate male voice; mature age; measured slow pace; authoritative yet compassionate.",
+        "Extra Female": "Neutral, casual, female voice, young adult; lower than average pitch.",
+        "Extra Male": "Gruff, textured baritone voice; older adult; relaxed slow speed; weary but kind.",
+    },
+    "ru": {
+        "Narrator": "Тёплый, чёткий мужской голос; зрелый возраст; размеренный темп; авторитетный, но сочувствующий.",
+        "Extra Female": "Нейтральный, непринуждённый женский голос; молодая взрослая женщина; низкий тембр.",
+        "Extra Male": "Грубоватый баритон; пожилой мужчина; медленный темп; усталый, но добродушный.",
+    },
+    "de": {
+        "Narrator": "Warme, artikulierte männliche Stimme; reifes Alter; gemessenes Tempo; autoritär aber mitfühlend.",
+        "Extra Female": "Neutrale, lockere weibliche Stimme; junge Erwachsene; unterdurchschnittliche Tonhöhe.",
+        "Extra Male": "Rauhe Baritonstimme; älterer Erwachsener; langsames Tempo; müde aber freundlich.",
+    },
+    "fr": {
+        "Narrator": "Voix masculine chaleureuse et articulée; âge mûr; rythme mesuré; autoritaire mais compatissant.",
+        "Extra Female": "Voix féminine neutre et décontractée; jeune adulte; hauteur inférieure à la moyenne.",
+        "Extra Male": "Voix de baryton rugueuse; adulte plus âgé; rythme lent; fatigué mais bienveillant.",
+    },
+}

@@ -20,6 +20,9 @@ from .config import (
     BASE_MODEL,
     CAST_FILE,
     DEFAULT_CAST,
+    DEFAULT_CAST_DESCRIPTIONS,
+    DEFAULT_CAST_LINES,
+    DEFAULT_LOCAL_LLM_MODEL,
     DEFAULT_LLM_MODEL,
     DEFAULT_THINKING_BUDGET,
     SCAN_FILE,
@@ -105,7 +108,22 @@ def save_cast(workdir: Path, cast_list: List[Character]) -> None:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def load_cast(workdir: Path) -> List[Character]:
+def _get_default_cast(language: str = "en") -> list[dict]:
+    """get default cast with audition lines and descriptions in the correct language."""
+    lang = language[:2].lower()
+    lines = DEFAULT_CAST_LINES.get(lang, DEFAULT_CAST_LINES["en"])
+    descs = DEFAULT_CAST_DESCRIPTIONS.get(lang, DEFAULT_CAST_DESCRIPTIONS["en"])
+    result = []
+    for c in DEFAULT_CAST:
+        result.append({
+            "name": c["name"],
+            "description": descs.get(c["name"], DEFAULT_CAST_DESCRIPTIONS["en"][c["name"]]),
+            "audition_line": lines.get(c["name"], DEFAULT_CAST_LINES["en"][c["name"]]),
+        })
+    return result
+
+
+def load_cast(workdir: Path, language: str = "en") -> List[Character]:
     """load cast from json file."""
 
     path = get_command_dir(workdir, "cast") / CAST_FILE
@@ -116,7 +134,7 @@ def load_cast(workdir: Path) -> List[Character]:
                 description=c["description"],
                 audition_line=c["audition_line"],
             )
-            for c in DEFAULT_CAST
+            for c in _get_default_cast(language)
         ]
 
     with open(path, encoding="utf-8") as f:
@@ -408,9 +426,16 @@ def run_scan(
         txt_path = chapter_map[num]
         text = txt_path.read_text(encoding="utf-8")
 
-        chars = scan_chapter_characters(
-            text, api_base, api_key, model or DEFAULT_LLM_MODEL, thinking_budget
-        )
+        # chunk large chapters to avoid exceeding context window
+        from .llm import split_text_smart
+        chunks = split_text_smart(text, max_words=1500)
+        all_chars: list[dict] = []
+        for chunk in chunks:
+            chunk_chars = scan_chapter_characters(
+                chunk, api_base, api_key, model or DEFAULT_LLM_MODEL, thinking_budget
+            )
+            all_chars.extend(chunk_chars)
+        chars = all_chars
 
         if verbose:
             names = [f"{c['name']}({c['count']})" for c in chars]
@@ -463,6 +488,7 @@ def run_cast_generation(
     verbose: bool = False,
     force: bool = False,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
+    language: str = "en",
 ) -> List[Character]:
     """generate voice descriptions from pre-scanned character list."""
     scanned = load_scan(workdir)
@@ -479,16 +505,17 @@ def run_cast_generation(
 
     print(f"cast: generating voices for {len(scanned)} characters...")
 
-    # gather text sample for audition line generation
+    # gather full text for audition line generation
     extract_dir = get_command_dir(workdir, "extract")
     txt_files = sorted(extract_dir.glob(f"*{TXT_EXT}"))
     text_sample = ""
     for txt_path in txt_files[:3]:
-        text_sample += txt_path.read_text(encoding="utf-8")[:3000] + "\n"
+        text_sample += txt_path.read_text(encoding="utf-8") + "\n"
 
     cast_list = generate_cast_from_scan(
         scanned, text_sample, api_base, api_key,
         model or DEFAULT_LLM_MODEL, thinking_budget,
+        language=language,
     )
 
     if verbose:
@@ -503,12 +530,15 @@ def run_cast_generation(
 
     # add default Extra voices if not present
     names_lower = {c.name.lower() for c in cast_list}
+    lang = language[:2].lower() if language else "en"
+    lang_lines = DEFAULT_CAST_LINES.get(lang, DEFAULT_CAST_LINES["en"])
+    lang_descs = DEFAULT_CAST_DESCRIPTIONS.get(lang, DEFAULT_CAST_DESCRIPTIONS["en"])
     for default in DEFAULT_CAST:
         if default["name"].lower() not in names_lower:
             cast_list.append(Character(
                 name=default["name"],
-                description=default["description"],
-                audition_line=default["audition_line"],
+                description=lang_descs.get(default["name"], DEFAULT_CAST_DESCRIPTIONS["en"][default["name"]]),
+                audition_line=lang_lines.get(default["name"], DEFAULT_CAST_LINES["en"][default["name"]]),
                 gender="f" if "female" in default["name"].lower() else "m",
             ))
 
@@ -525,11 +555,12 @@ def run_auditions(
     verbose: bool = False,
     force: bool = False,
     audition_line: str | None = None,
+    language: str = "en",
 ) -> None:
     """generate voice samples for cast."""
 
     if cast is None:
-        cast = load_cast(workdir)
+        cast = load_cast(workdir, language)
 
     voices_dir = get_command_dir(workdir, "audition")
     resume = ResumeManager.for_command(workdir, "audition", force=force)
@@ -575,8 +606,16 @@ def run_auditions(
         if verbose:
             tqdm.write(f"  generating {char.name}: '{line}'")
 
+        # prepend explicit gender to description so VoiceDesign picks correct voice
+        gender_prefix = ""
+        if char.gender == "f":
+            gender_prefix = "Female voice. "
+        elif char.gender == "m":
+            gender_prefix = "Male voice. "
+        instruct = gender_prefix + char.description
+
         try:
-            audio, sr = engine.design_voice(text=line, instruct=char.description)
+            audio, sr = engine.design_voice(text=line, instruct=instruct)
             sf.write(str(wav_path), audio, sr)
             resume.update(char.name, char_hash)
             resume.save()
@@ -745,10 +784,11 @@ def run_performance(
     pooled: bool = False,
     verbose: bool = False,
     force: bool = False,
+    language: str = "en",
 ) -> None:
     """synthesize audio from scripts with segment-level resume."""
 
-    cast = load_cast(workdir)
+    cast = load_cast(workdir, language)
     if not cast:
         if (get_command_dir(workdir, "cast") / CAST_FILE).exists():
             print("cast file found but contains no characters.")
@@ -1622,6 +1662,17 @@ def cmd_normalize(args):
     normalize_scripts(Path(args.workdir), chapters, verbose=args.verbose)
 
 
+def _tts_language(lang_code: str) -> str:
+    """map 2-letter language code to Qwen3-TTS language name."""
+    mapping = {
+        "ru": "Russian", "en": "English", "zh": "Chinese",
+        "ja": "Japanese", "ko": "Korean", "de": "German",
+        "fr": "French", "pt": "Portuguese", "es": "Spanish",
+        "it": "Italian",
+    }
+    return mapping.get(lang_code, "English")
+
+
 def dramatize_book(
     workdir: Path,
     api_base: str | None = None,
@@ -1634,17 +1685,40 @@ def dramatize_book(
     force: bool = False,
     thinking_budget: int = DEFAULT_THINKING_BUDGET,
     llm_server_config: Optional["LlamaServerConfig"] = None,
+    llm_hf_model: str | None = None,
 ) -> None:
     """run full dramatization pipeline."""
-    from .llm_server import LlamaServer, LlamaServerConfig  # noqa: F811
+    from .llm_server import LlamaServer, LlamaServerConfig, TransformersServer, TransformersServerConfig  # noqa: F811
 
-    server: LlamaServer | None = None
-    if llm_server_config is not None:
+    # load book language from metadata
+    metadata = load_metadata(workdir)
+    language = metadata.get("language", "en")[:2].lower()
+    print(f"dramatize: book language: {language}")
+
+    # set TTS language
+    if tts_config is None:
+        tts_config = TTSConfig()
+    tts_config.language = _tts_language(language)
+    from .llm_server import LlamaServer, LlamaServerConfig, TransformersServer, TransformersServerConfig  # noqa: F811
+
+    server: LlamaServer | TransformersServer | None = None
+    if llm_hf_model:
+        hf_config = TransformersServerConfig(model=llm_hf_model)
+        server = TransformersServer(hf_config)
+        server.start()
+        api_base = server.api_base
+        if not api_key:
+            api_key = "local"
+        if not model:
+            model = DEFAULT_LOCAL_LLM_MODEL
+    elif llm_server_config is not None:
         server = LlamaServer(llm_server_config)
         server.start()
         api_base = server.api_base
         if not api_key:
             api_key = "local"
+        if not model:
+            model = DEFAULT_LOCAL_LLM_MODEL
 
     try:
         run_scan(
@@ -1666,6 +1740,7 @@ def dramatize_book(
             verbose=verbose,
             force=force,
             thinking_budget=thinking_budget,
+            language=language,
         )
         # generate scripts first before auditions
         if not run_script_generation(
@@ -1700,7 +1775,7 @@ def dramatize_book(
     normalize_scripts(workdir, chapters, verbose=verbose)
 
     # now run auditions and performance (TTS-only, no LLM needed)
-    run_auditions(workdir, verbose=verbose, force=force)
+    run_auditions(workdir, verbose=verbose, force=force, language=language)
     run_performance(
         workdir,
         chapters,
@@ -1708,4 +1783,5 @@ def dramatize_book(
         pooled,
         verbose=verbose,
         force=force,
+        language=language,
     )

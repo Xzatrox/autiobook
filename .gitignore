@@ -5,6 +5,7 @@ __pycache__/
 /.ruff_cache/
 .pytest_cache/
 /testdata_workdir/
-/books/
 .env
 .DS_*
+/workdir/
+/models/

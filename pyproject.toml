@@ -46,6 +46,11 @@ rocm-gfx1151 = [
     "rocm-sdk-core",
     "rocm-sdk-libraries-gfx1151",
 ]
+rocm-gfx110x = [
+    "numpy<2",
+    "torch @ https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torch-2.7.0a0+git3f903c3-cp312-cp312-win_amd64.whl ; python_version == '3.12'",
+    "torchaudio @ https://github.com/scottt/rocm-TheRock/releases/download/v6.5.0rc-pytorch-gfx110x/torchaudio-2.6.0a0+1a8f621-cp312-cp312-win_amd64.whl ; python_version == '3.12'",
+]
 
 [tool.setuptools.packages.find]
 include = ["autiobook*"]
@@ -57,6 +62,7 @@ conflicts = [
         { extra = "cpu" },
         { extra = "gpu" },
         { extra = "rocm-gfx1151" },
+        { extra = "rocm-gfx110x" },
     ],
 ]
 

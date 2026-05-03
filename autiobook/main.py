@@ -2,6 +2,7 @@
 
 # ruff: noqa: E402
 
+import autiobook  # noqa: F401 - triggers __init__.py (sets HIP_VISIBLE_DEVICES before torch)
 import argparse
 import sys
 from pathlib import Path
@@ -132,6 +133,7 @@ def cmd_dramatize(args):
             force=args.force,
             thinking_budget=args.thinking_budget,
             llm_server_config=llm_server_config,
+            llm_hf_model=getattr(args, "llm_server_hf_model", None),
         )
 
     _run_pipeline(args, process_fn, "dramatize")

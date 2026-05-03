@@ -305,7 +305,6 @@ def process_audio_pipeline(
         seg_dir = tasks[0].segments_dir
         hashes = [t.segment_hash for t in tasks]
         m_hash = compute_hash(hashes)
-
         # determine which segments need generation
         pending_hashes = set()
         for t in tasks:
@@ -339,10 +338,12 @@ def process_audio_pipeline(
 
     if not all_pending_tasks:
         # all segments cached, just assemble
+        print(f"  perform: all {sum(len(ch.hashes) for ch in chapters)} segments cached, assembling...")
         _try_assemble_ready_chapters(chapters, set(), resume)
         return
 
     # group tasks by voice for efficient batching
+    print(f"  perform: {len(all_pending_tasks)} segments to synthesize, {sum(len(ch.hashes) for ch in chapters) - len(all_pending_tasks)} cached")
     tasks_by_voice: dict[tuple, list[AudioTask]] = defaultdict(list)
     for task in all_pending_tasks:
         key = _get_voice_key(task)

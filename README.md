@@ -19,8 +19,13 @@ make build-cuda
 # apple silicon (mps)
 make build-mps
 
-# amd rocm gpu (gfx1151)
+# amd rocm gpu - linux (gfx1151 / rdna4)
 make build-rocm
+
+# amd rocm gpu - windows (gfx110x / rdna3+, e.g. rx 7600, 7800, 7900, 9070)
+make build-rocm-win
+# or without make:
+uv venv && uv sync --extra rocm-gfx110x
 
 # cpu only
 make build-cpu

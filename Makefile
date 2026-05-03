@@ -22,6 +22,9 @@ build-rocm: venv
 	uv sync --extra rocm-gfx1151
 	FLASH_ATTENTION_TRITON_AMD_ENABLE="TRUE" uv pip install flash-attn --no-build-isolation
 
+build-rocm-win: venv
+	uv sync --extra rocm-gfx110x
+
 test:
 	./tests/test_e2e.sh
 	./tests/test_e2e_dramatize.sh

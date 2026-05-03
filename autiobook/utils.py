@@ -135,6 +135,10 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
             help="path to GGUF model to auto-start llama-server",
         )
         g.add_argument(
+            "--llm-server-hf-model",
+            help="HuggingFace model id to auto-start transformers server (uses ROCm torch)",
+        )
+        g.add_argument(
             "--llm-server-draft-model",
             help="path to draft GGUF model for speculative decoding",
         )
@@ -147,8 +151,8 @@ def add_common_args(parser: argparse.ArgumentParser, group: str = "all"):
         g.add_argument(
             "--llm-server-ctx-size",
             type=int,
-            default=16384,
-            help="context size for llama-server (default: 16384)",
+            default=8192,
+            help="context size for llama-server (default: 8192)",
         )
 
     if group in ["all", "runtime"]:
